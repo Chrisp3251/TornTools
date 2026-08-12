@@ -1,6 +1,11 @@
 from pathlib import Path
+import asyncio
+import statistics
+import time
+from typing import Any
+
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -8,90 +13,234 @@ from pydantic import BaseModel
 BASE = Path(__file__).resolve().parent
 WEB = BASE / "web"
 API_BASE = "https://api.torn.com/v2"
-XANAX_ID = 206
+MARKET_FEE = 0.05
 
-app = FastAPI(title="TornTools Local Scanner")
+ITEMS = {
+    206: {"name": "Xanax", "mode": "stock", "enabled": True, "note": "Keep for jumps / train stack"},
+    366: {"name": "Erotic DVD", "mode": "stock", "enabled": True, "note": "Keep for happy jumps"},
+    370: {"name": "Drug Pack", "mode": "flip", "enabled": True, "note": "Liquid supply-pack flip candidate"},
+    283: {"name": "Donator Pack", "mode": "flip", "enabled": False, "note": "High-capital flip candidate"},
+}
+
+app = FastAPI(title="TornTools Local Scanner", version="0.2.0")
 app.mount("/static", StaticFiles(directory=WEB), name="static")
 
-_api_key = None
+_api_key: str | None = None
+_last_scan_at = 0.0
+_last_scan: dict[str, Any] | None = None
+
 
 class KeyPayload(BaseModel):
     api_key: str
+
+
+def market_url(item_id: int) -> str:
+    return (
+        "https://www.torn.com/page.php?sid=ItemMarket"
+        f"#/market/view=search&itemID={item_id}&sortField=price&sortOrder=ASC"
+    )
+
+
+def torn_error(data: Any) -> str | None:
+    if not isinstance(data, dict) or not data.get("error"):
+        return None
+    err = data["error"]
+    if isinstance(err, dict):
+        code = err.get("code")
+        message = err.get("error") or err.get("message") or str(err)
+        return f"Torn API error {code}: {message}" if code is not None else message
+    return str(err)
+
+
+def clean_listings(data: dict) -> list[dict]:
+    rows = data.get("itemmarket", []) if isinstance(data, dict) else []
+    clean = []
+    for row in rows:
+        try:
+            price = int(row["price"])
+            amount = int(row.get("amount", 1) or 1)
+            if price <= 0:
+                continue
+            clean.append({"price": price, "amount": max(1, amount)})
+        except (KeyError, TypeError, ValueError):
+            continue
+    clean.sort(key=lambda x: x["price"])
+    return clean
+
+
+async def fetch_item_market(client: httpx.AsyncClient, item_id: int, limit: int = 100) -> dict:
+    if not _api_key:
+        raise HTTPException(401, "Load your Torn API key first")
+
+    try:
+        response = await client.get(
+            f"{API_BASE}/market/{item_id}/itemmarket",
+            headers={"Authorization": f"ApiKey {_api_key}"},
+            params={"limit": limit, "offset": 0},
+        )
+        data = response.json()
+    except httpx.RequestError as exc:
+        raise HTTPException(502, f"Could not reach Torn API: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(502, "Torn API returned unreadable data") from exc
+
+    err = torn_error(data)
+    if err:
+        raise HTTPException(400, err)
+    if response.status_code >= 400:
+        raise HTTPException(response.status_code, f"Torn API returned HTTP {response.status_code}")
+    return data
+
+
+def analyze_item(item_id: int, listings: list[dict]) -> dict:
+    meta = ITEMS[item_id]
+    if not listings:
+        return {
+            "id": item_id,
+            **meta,
+            "market_url": market_url(item_id),
+            "error": "No readable listings returned",
+        }
+
+    lowest = listings[0]["price"]
+    qty_floor = sum(x["amount"] for x in listings if x["price"] == lowest)
+    next_higher = next((x["price"] for x in listings if x["price"] > lowest), None)
+
+    # A local reference price: median of the first 20 individual listing prices.
+    reference_prices = [x["price"] for x in listings[:20]]
+    reference = int(statistics.median(reference_prices)) if reference_prices else lowest
+    discount_pct = ((reference - lowest) / reference * 100) if reference else 0.0
+
+    gross_gap = None
+    net_exit = None
+    net_profit = None
+    net_roi = None
+    if next_higher is not None:
+        gross_gap = next_higher - lowest
+        net_exit = int(next_higher * (1 - MARKET_FEE))
+        net_profit = net_exit - lowest
+        net_roi = (net_profit / lowest) * 100
+
+    # Conservative opportunity classifications. Frontend settings decide whether to alert.
+    if meta["mode"] == "stock":
+        opportunity_type = "stock_deal" if discount_pct > 0 else "normal"
+        opportunity_value = discount_pct
+    else:
+        opportunity_type = "flip" if (net_profit or 0) > 0 else "normal"
+        opportunity_value = net_roi or 0.0
+
+    return {
+        "id": item_id,
+        **meta,
+        "lowest": lowest,
+        "qty_floor": qty_floor,
+        "next_higher": next_higher,
+        "reference": reference,
+        "discount_pct": discount_pct,
+        "gross_gap": gross_gap,
+        "net_exit_after_fee": net_exit,
+        "net_profit_after_fee": net_profit,
+        "net_roi_after_fee": net_roi,
+        "opportunity_type": opportunity_type,
+        "opportunity_value": opportunity_value,
+        "market_url": market_url(item_id),
+        "top": listings[:10],
+    }
+
 
 @app.get("/")
 async def home():
     return FileResponse(WEB / "index.html")
 
+
 @app.get("/api/status")
 async def status():
-    return {"ok": True, "key_loaded": bool(_api_key)}
+    return {
+        "ok": True,
+        "version": "0.2.0",
+        "key_loaded": bool(_api_key),
+        "market_fee_pct": MARKET_FEE * 100,
+        "items": [{"id": item_id, **meta} for item_id, meta in ITEMS.items()],
+    }
+
 
 @app.post("/api/key")
 async def set_key(payload: KeyPayload):
     global _api_key
-    key = payload.api_key.strip()
-    if not key:
+    candidate = payload.api_key.strip()
+    if not candidate:
         raise HTTPException(400, "API key is blank")
-    _api_key = key
-    return {"ok": True}
+
+    old_key = _api_key
+    _api_key = candidate
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            await fetch_item_market(client, 206, limit=1)
+    except Exception:
+        _api_key = old_key
+        raise
+
+    return {"ok": True, "message": "API key validated and loaded into memory"}
+
 
 @app.delete("/api/key")
 async def forget_key():
-    global _api_key
+    global _api_key, _last_scan, _last_scan_at
     _api_key = None
+    _last_scan = None
+    _last_scan_at = 0.0
     return {"ok": True}
 
-@app.get("/api/xanax")
-async def xanax():
+
+@app.get("/api/scan")
+async def scan(ids: str = Query(default="206,366,370")):
+    global _last_scan, _last_scan_at
+
     if not _api_key:
         raise HTTPException(401, "Load your Torn API key first")
 
-    url = f"{API_BASE}/market/{XANAX_ID}/itemmarket"
-    headers = {"Authorization": f"ApiKey {_api_key}"}
-    params = {"limit": 100, "offset": 0}
-
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(url, headers=headers, params=params)
-            data = r.json()
-    except Exception as exc:
-        raise HTTPException(502, f"Could not query Torn API: {exc}")
+        requested = []
+        for part in ids.split(","):
+            item_id = int(part.strip())
+            if item_id in ITEMS and item_id not in requested:
+                requested.append(item_id)
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid item ID list") from exc
 
-    if isinstance(data, dict) and data.get("error"):
-        raise HTTPException(400, str(data["error"]))
+    if not requested:
+        raise HTTPException(400, "No supported items selected")
 
-    rows = data.get("itemmarket", []) if isinstance(data, dict) else []
-    clean = []
-    for x in rows:
-        try:
-            clean.append({
-                "price": int(x["price"]),
-                "amount": int(x.get("amount", 1))
+    async with httpx.AsyncClient(timeout=15) as client:
+        results = await asyncio.gather(
+            *(fetch_item_market(client, item_id) for item_id in requested),
+            return_exceptions=True,
+        )
+
+    analyzed = []
+    for item_id, result in zip(requested, results):
+        if isinstance(result, Exception):
+            analyzed.append({
+                "id": item_id,
+                **ITEMS[item_id],
+                "market_url": market_url(item_id),
+                "error": str(getattr(result, "detail", result)),
             })
-        except Exception:
-            pass
+            continue
+        analyzed.append(analyze_item(item_id, clean_listings(result)))
 
-    clean.sort(key=lambda x: x["price"])
-    if not clean:
-        raise HTTPException(502, "No readable Xanax listings were returned")
-
-    low = clean[0]["price"]
-    next_price = next((x["price"] for x in clean if x["price"] > low), None)
-    qty_floor = sum(x["amount"] for x in clean if x["price"] == low)
-
-    net_profit = None
-    net_roi = None
-    if next_price:
-        net_exit = int(next_price * 0.95)
-        net_profit = net_exit - low
-        net_roi = (net_profit / low) * 100
-
-    return {
-        "lowest": low,
-        "qty_floor": qty_floor,
-        "next_price": next_price,
-        "net_profit_after_5pct": net_profit,
-        "net_roi_after_5pct": net_roi,
-        "top": clean[:12],
-        "market_url": "https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=206&sortField=price&sortOrder=ASC"
+    now = time.time()
+    payload = {
+        "ok": True,
+        "scanned_at": now,
+        "market_fee_pct": MARKET_FEE * 100,
+        "items": analyzed,
     }
+    _last_scan = payload
+    _last_scan_at = now
+    return payload
+
+
+@app.get("/api/last-scan")
+async def last_scan():
+    return _last_scan or {"ok": True, "scanned_at": None, "items": []}
