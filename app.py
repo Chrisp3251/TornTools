@@ -1,6 +1,5 @@
 from pathlib import Path
 import asyncio
-import statistics
 import time
 from typing import Any
 
@@ -22,7 +21,7 @@ ITEMS = {
     283: {"name": "Donator Pack", "mode": "flip", "enabled": False, "note": "High-capital flip candidate"},
 }
 
-app = FastAPI(title="TornTools Local Scanner", version="0.2.1")
+app = FastAPI(title="TornTools Local Scanner", version="0.2.2")
 app.mount("/static", StaticFiles(directory=WEB), name="static")
 
 _api_key: str | None = None
@@ -52,20 +51,48 @@ def torn_error(data: Any) -> str | None:
     return str(err)
 
 
-def clean_listings(data: dict) -> list[dict]:
-    rows = data.get("itemmarket", []) if isinstance(data, dict) else []
+def parse_itemmarket(data: dict) -> tuple[list[dict], int | None]:
+    """Parse Torn API v2 market/{id}/itemmarket response.
+
+    Current v2 shape:
+      {"itemmarket": {"item": {..., "average_price": n}, "listings": [...]}}
+    """
+    if not isinstance(data, dict):
+        return [], None
+
+    itemmarket = data.get("itemmarket") or {}
+    if not isinstance(itemmarket, dict):
+        return [], None
+
+    item = itemmarket.get("item") or {}
+    average_price = None
+    if isinstance(item, dict):
+        try:
+            raw_avg = item.get("average_price")
+            average_price = int(raw_avg) if raw_avg is not None else None
+        except (TypeError, ValueError):
+            average_price = None
+
+    rows = itemmarket.get("listings") or []
     clean = []
     for row in rows:
+        if not isinstance(row, dict):
+            continue
         try:
             price = int(row["price"])
             amount = int(row.get("amount", 1) or 1)
             if price <= 0:
                 continue
-            clean.append({"price": price, "amount": max(1, amount)})
+            clean.append({
+                "id": row.get("id"),
+                "price": price,
+                "amount": max(1, amount),
+            })
         except (KeyError, TypeError, ValueError):
             continue
+
     clean.sort(key=lambda x: x["price"])
-    return clean
+    return clean, average_price
 
 
 async def fetch_item_market(client: httpx.AsyncClient, item_id: int, limit: int = 100) -> dict:
@@ -92,7 +119,7 @@ async def fetch_item_market(client: httpx.AsyncClient, item_id: int, limit: int 
     return data
 
 
-def analyze_item(item_id: int, listings: list[dict]) -> dict:
+def analyze_item(item_id: int, listings: list[dict], average_price: int | None) -> dict:
     meta = ITEMS[item_id]
     if not listings:
         return {
@@ -106,8 +133,9 @@ def analyze_item(item_id: int, listings: list[dict]) -> dict:
     qty_floor = sum(x["amount"] for x in listings if x["price"] == lowest)
     next_higher = next((x["price"] for x in listings if x["price"] > lowest), None)
 
-    reference_prices = [x["price"] for x in listings[:20]]
-    reference = int(statistics.median(reference_prices)) if reference_prices else lowest
+    # Prefer Torn's own returned average_price as the reference. If it is
+    # unavailable, fall back to the first higher listing / current floor.
+    reference = average_price or next_higher or lowest
     discount_pct = ((reference - lowest) / reference * 100) if reference else 0.0
 
     gross_gap = None
@@ -138,6 +166,7 @@ def analyze_item(item_id: int, listings: list[dict]) -> dict:
         "qty_floor": qty_floor,
         "next_higher": next_higher,
         "reference": reference,
+        "average_price": average_price,
         "discount_pct": discount_pct,
         "gross_gap": gross_gap,
         "net_exit_each_after_fee": net_exit_each,
@@ -161,7 +190,7 @@ async def home():
 async def status():
     return {
         "ok": True,
-        "version": "0.2.1",
+        "version": "0.2.2",
         "key_loaded": bool(_api_key),
         "market_fee_pct": MARKET_FEE * 100,
         "items": [{"id": item_id, **meta} for item_id, meta in ITEMS.items()],
@@ -175,9 +204,6 @@ async def set_key(payload: KeyPayload):
     if not candidate:
         raise HTTPException(400, "API key is blank")
 
-    # Do not validate against a market endpoint here. A valid key may lack
-    # market->itemmarket permission, and that should be reported by the scan
-    # instead of making the key look invalid.
     _api_key = candidate
     return {
         "ok": True,
@@ -229,7 +255,9 @@ async def scan(ids: str = Query(default="206,366,370")):
                 "error": str(getattr(result, "detail", result)),
             })
             continue
-        analyzed.append(analyze_item(item_id, clean_listings(result)))
+
+        listings, average_price = parse_itemmarket(result)
+        analyzed.append(analyze_item(item_id, listings, average_price))
 
     now = time.time()
     payload = {
