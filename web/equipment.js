@@ -91,9 +91,7 @@ function renderInventory(items) {
   }).join("");
 }
 
-function applyInventoryFilters() {
-  renderInventory(filteredInventory());
-}
+function applyInventoryFilters() { renderInventory(filteredInventory()); }
 
 async function loadEquipmentInventory(force=false) {
   if (equipmentInventoryLoaded && !force) return;
@@ -105,8 +103,7 @@ async function loadEquipmentInventory(force=false) {
   if (rows) rows.innerHTML='<tr><td colspan="7" class="muted">Loading equipment…</td></tr>';
   try {
     const r=await fetch("/api/equipment/inventory");
-    let d={};
-    try { d=await r.json(); } catch {}
+    let d={}; try { d=await r.json(); } catch {}
     if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
     equipmentInventory=(d.items||[]).map((i,index)=>({...i,_sourceIndex:index}));
     equipmentInventoryLoaded=true;
@@ -121,7 +118,7 @@ async function loadEquipmentInventory(force=false) {
   } catch(e) {
     equipmentInventoryLoaded=false;
     if (rows) rows.innerHTML='<tr><td colspan="7" class="muted">Inventory unavailable. Manual equipment checking still works below.</td></tr>';
-    if (status) status.innerHTML=`<span class="bad">Could not load inventory: ${e.message}</span><br><span class="muted">If Torn reports an access error, your API key likely needs the user inventory selection enabled.</span>`;
+    if (status) status.innerHTML=`<span class="bad">Could not load inventory: ${e.message}</span>`;
   } finally {
     if (btn) { btn.disabled=false; btn.textContent="Refresh Inventory"; }
   }
@@ -135,17 +132,22 @@ function equipmentParams(i,vendor=0) {
   return params;
 }
 
-async function loadSelectedMarketValue(i) {
+async function loadSelectedItemValues(i) {
   const el=document.getElementById("eqSelectedMarket");
-  if (!el || i.quality==null) return;
-  el.textContent="Torn market value: checking…";
+  const vendorInput=document.getElementById("eqVendor");
+  if (el) el.textContent="Torn values: checking…";
   try {
-    const r=await fetch(`/api/equipment/check?${equipmentParams(i,0).toString()}`);
+    const r=await fetch(`/api/equipment/meta?item_id=${encodeURIComponent(i.item_id)}`);
     let d={}; try{d=await r.json()}catch{}
     if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
-    el.innerHTML=`Torn market value: <strong>${d.market_average ? eqMoney.format(d.market_average) : "—"}</strong><span class="muted"> · from Torn's current Item Market metadata</span>`;
+    i.vendor_sell=d.sell_price;
+    i.torn_market_price=d.market_price;
+    if (vendorInput && d.sell_price != null) vendorInput.value=String(d.sell_price);
+    if (el) el.innerHTML=`Torn market value: <strong>${d.market_price != null ? eqMoney.format(d.market_price) : "—"}</strong> · Vendor/NPC sell: <strong>${d.sell_price != null ? eqMoney.format(d.sell_price) : "—"}</strong><span class="muted"> · Torn base item values</span>`;
+    return d;
   } catch(e) {
-    el.innerHTML=`Torn market value: <span class="muted">unavailable (${e.message})</span>`;
+    if (el) el.innerHTML=`Torn values: <span class="muted">unavailable (${e.message})</span>`;
+    return null;
   }
 }
 
@@ -157,16 +159,18 @@ async function useInventoryItem(index) {
   document.getElementById("eqDamage").value=i.damage ?? "";
   document.getElementById("eqAccuracy").value=i.accuracy ?? "";
   document.getElementById("eqArmor").value=i.armor ?? "";
-  document.getElementById("eqVendor").value="";
+  document.getElementById("eqVendor").value=i.vendor_sell ?? "";
   const selected=document.getElementById("eqSelected");
   if (selected) selected.textContent=`Selected: ${i.name} · ${inventoryCategory(i)} · ${i.quality==null?"quality unknown":`${Number(i.quality).toFixed(2)}% quality`}${i.plain?"":" · RW/bonused"}`;
-  document.getElementById("equipmentResult").innerHTML='<div class="empty">Stats loaded from your inventory. Enter the vendor sell value, then click Check Equipment.</div>';
-  loadSelectedMarketValue(i);
-  document.getElementById("eqVendor").focus();
+  document.getElementById("equipmentResult").innerHTML='<div class="empty">Stats loaded. Fetching Torn vendor and market values…</div>';
+  const meta=await loadSelectedItemValues(i);
+  document.getElementById("equipmentResult").innerHTML=meta
+    ? '<div class="empty">Stats and Torn values loaded. Click Check Equipment.</div>'
+    : '<div class="empty">Stats loaded. Vendor value could not be fetched automatically, so enter it manually if needed.</div>';
 }
 
 function compRow(c) {
-  const stats = [];
+  const stats=[];
   if (c.damage != null) stats.push(`DMG ${c.damage.toFixed(2)}`);
   if (c.accuracy != null) stats.push(`ACC ${c.accuracy.toFixed(2)}`);
   if (c.armor != null) stats.push(`ARM ${c.armor.toFixed(2)}`);
@@ -174,78 +178,61 @@ function compRow(c) {
 }
 
 function renderEquipmentResult(d) {
-  const box = document.getElementById("equipmentResult");
-  const verdictClass = d.verdict === "MARKET IT" ? "eq-market" : d.verdict === "VENDOR" ? "eq-vendor" : "eq-hold";
-  const percentile = d.quality_percentile == null ? "—" : `${d.quality_percentile.toFixed(1)}th percentile`;
-  const cache = d.cache || {};
-  const cacheText = cache.cache_age_seconds == null ? "Unknown market-cache age" : `${cache.freshness} · ${cache.cache_age_seconds}s old`;
-  const selectedMarket=document.getElementById("eqSelectedMarket");
-  if (selectedMarket) selectedMarket.innerHTML=`Torn market value: <strong>${d.market_average ? eqMoney.format(d.market_average) : "—"}</strong><span class="muted"> · from Torn's current Item Market metadata</span>`;
-  box.innerHTML = `
+  const box=document.getElementById("equipmentResult");
+  const verdictClass=d.verdict==="MARKET IT"?"eq-market":d.verdict==="VENDOR"?"eq-vendor":"eq-hold";
+  const percentile=d.quality_percentile==null?"—":`${d.quality_percentile.toFixed(1)}th percentile`;
+  const cache=d.cache||{};
+  const cacheText=cache.cache_age_seconds==null?"Unknown market-cache age":`${cache.freshness} · ${cache.cache_age_seconds}s old`;
+  box.innerHTML=`
     <article class="equipment-result-card ${verdictClass}">
-      <div class="eq-result-head">
-        <div><div class="eyebrow">${d.type || "EQUIPMENT"}</div><h2>${d.name}</h2><p class="muted">Item #${d.item_id} · ${cacheText}</p></div>
-        <div class="eq-verdict">${d.verdict}</div>
-      </div>
+      <div class="eq-result-head"><div><div class="eyebrow">${d.type||"EQUIPMENT"}</div><h2>${d.name}</h2><p class="muted">Item #${d.item_id} · ${cacheText}</p></div><div class="eq-verdict">${d.verdict}</div></div>
       <p class="eq-reason">${d.reason}</p>
       <div class="eq-metrics">
         <div><span>Your quality</span><strong>${Number(d.your_stats.quality).toFixed(2)}%</strong><small>${percentile} vs current plain listings</small></div>
-        <div><span>Vendor value</span><strong>${eqMoney.format(d.vendor_sell || 0)}</strong><small>Guaranteed cash-out you entered</small></div>
-        <div><span>Competitive ask</span><strong>${d.competitive_ask ? eqMoney.format(d.competitive_ask) : "—"}</strong><small>Based on closest current plain listings</small></div>
-        <div><span>After 5% fee</span><strong>${d.net_after_fee ? eqMoney.format(d.net_after_fee) : "—"}</strong><small>${d.premium_over_vendor == null ? "No comparison" : `${d.premium_over_vendor >= 0 ? "+" : ""}${eqMoney.format(d.premium_over_vendor)} vs vendor`}</small></div>
+        <div><span>Vendor value</span><strong>${eqMoney.format(d.vendor_sell||0)}</strong><small>Torn NPC/vendor sell value</small></div>
+        <div><span>Competitive ask</span><strong>${d.competitive_ask?eqMoney.format(d.competitive_ask):"—"}</strong><small>Based on closest current plain listings</small></div>
+        <div><span>After 5% fee</span><strong>${d.net_after_fee?eqMoney.format(d.net_after_fee):"—"}</strong><small>${d.premium_over_vendor==null?"No comparison":`${d.premium_over_vendor>=0?"+":""}${eqMoney.format(d.premium_over_vendor)} vs vendor`}</small></div>
       </div>
       <div class="research-note"><strong>Confidence: ${d.confidence}</strong> · ${d.close_comparables} close-quality comparables · ${d.plain_listings} plain listings checked. Asking prices are not confirmed sale prices.</div>
-      <div class="table-wrap"><table class="research-table"><thead><tr><th>Comparable quality</th><th>Stats</th><th>Asking price</th></tr></thead><tbody>${(d.comps || []).map(compRow).join("") || '<tr><td colspan="3">No comparable listings.</td></tr>'}</tbody></table></div>
-      <div class="toolbar eq-actions"><button onclick="window.open('${d.market_url}','_blank','noopener')">Open This Item Market</button><span class="muted">Torn market value: ${d.market_average ? eqMoney.format(d.market_average) : "—"} · Median closest ask: ${d.median_ask ? eqMoney.format(d.median_ask) : "—"}</span></div>
+      <div class="table-wrap"><table class="research-table"><thead><tr><th>Comparable quality</th><th>Stats</th><th>Asking price</th></tr></thead><tbody>${(d.comps||[]).map(compRow).join("")||'<tr><td colspan="3">No comparable listings.</td></tr>'}</tbody></table></div>
+      <div class="toolbar eq-actions"><button onclick="window.open('${d.market_url}','_blank','noopener')">Open This Item Market</button><span class="muted">Live Item Market average: ${d.market_average?eqMoney.format(d.market_average):"—"} · Median closest ask: ${d.median_ask?eqMoney.format(d.median_ask):"—"}</span></div>
     </article>`;
 }
 
 async function checkEquipment() {
-  const itemId = eqVal("eqItemId");
-  const quality = eqVal("eqQuality");
-  const damage = eqVal("eqDamage");
-  const accuracy = eqVal("eqAccuracy");
-  const armor = eqVal("eqArmor");
-  const vendor = eqVal("eqVendor") ?? 0;
-  const result = document.getElementById("equipmentResult");
-  const btn = document.getElementById("eqCheckBtn");
-  if (!itemId || quality == null) {
-    result.innerHTML = '<div class="empty bad">Item ID and Quality are required.</div>';
-    return;
-  }
-  const params = new URLSearchParams({item_id:String(Math.trunc(itemId)), quality:String(quality), vendor_sell:String(Math.max(0,Math.trunc(vendor)))});
-  if (damage != null) params.set("damage", String(damage));
-  if (accuracy != null) params.set("accuracy", String(accuracy));
-  if (armor != null) params.set("armor", String(armor));
-  btn.disabled = true; btn.textContent = "Checking market…";
-  result.innerHTML = '<div class="empty">Checking current plain listings…</div>';
+  const itemId=eqVal("eqItemId");
+  const quality=eqVal("eqQuality");
+  const damage=eqVal("eqDamage");
+  const accuracy=eqVal("eqAccuracy");
+  const armor=eqVal("eqArmor");
+  const vendor=eqVal("eqVendor")??0;
+  const result=document.getElementById("equipmentResult");
+  const btn=document.getElementById("eqCheckBtn");
+  if (!itemId || quality==null) { result.innerHTML='<div class="empty bad">Item ID and Quality are required.</div>'; return; }
+  const params=new URLSearchParams({item_id:String(Math.trunc(itemId)),quality:String(quality),vendor_sell:String(Math.max(0,Math.trunc(vendor)))});
+  if (damage!=null) params.set("damage",String(damage));
+  if (accuracy!=null) params.set("accuracy",String(accuracy));
+  if (armor!=null) params.set("armor",String(armor));
+  btn.disabled=true; btn.textContent="Checking market…";
+  result.innerHTML='<div class="empty">Checking current plain listings…</div>';
   try {
-    const r = await fetch(`/api/equipment/check?${params.toString()}`);
-    let d = {};
-    try { d = await r.json(); } catch {}
-    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    const r=await fetch(`/api/equipment/check?${params.toString()}`);
+    let d={}; try{d=await r.json()}catch{}
+    if (!r.ok) throw new Error(d.detail||`HTTP ${r.status}`);
     renderEquipmentResult(d);
-  } catch (e) {
-    result.innerHTML = `<div class="empty bad">${e.message}</div>`;
-  } finally {
-    btn.disabled = false; btn.textContent = "Check Equipment";
-  }
+  } catch(e) { result.innerHTML=`<div class="empty bad">${e.message}</div>`; }
+  finally { btn.disabled=false; btn.textContent="Check Equipment"; }
 }
 
 function clearEquipment() {
-  ["eqItemId","eqQuality","eqDamage","eqAccuracy","eqArmor","eqVendor"].forEach(id => { const el=document.getElementById(id); if(el) el.value=""; });
-  const selected=document.getElementById("eqSelected");
-  if (selected) selected.textContent="No inventory item selected.";
-  const market=document.getElementById("eqSelectedMarket");
-  if (market) market.textContent="Torn market value: —";
-  document.getElementById("equipmentResult").innerHTML = '<div class="empty">Choose an inventory item above or enter an item and its stats, then check the market.</div>';
+  ["eqItemId","eqQuality","eqDamage","eqAccuracy","eqArmor","eqVendor"].forEach(id=>{const el=document.getElementById(id);if(el)el.value="";});
+  const selected=document.getElementById("eqSelected"); if(selected)selected.textContent="No inventory item selected.";
+  const market=document.getElementById("eqSelectedMarket"); if(market)market.textContent="Torn market value: —";
+  document.getElementById("equipmentResult").innerHTML='<div class="empty">Choose an inventory item above or enter an item and its stats, then check the market.</div>';
 }
 
-window.addEventListener("DOMContentLoaded", () => {
-  const saved = localStorage.getItem("torntools.activeTab") || "scanner";
-  switchToolTab(saved === "equipment" ? "equipment" : "scanner");
-  ["eqItemId","eqQuality","eqDamage","eqAccuracy","eqArmor","eqVendor"].forEach(id => {
-    const el=document.getElementById(id);
-    if (el) el.addEventListener("keydown", e => { if (e.key === "Enter") checkEquipment(); });
-  });
+window.addEventListener("DOMContentLoaded",()=>{
+  const saved=localStorage.getItem("torntools.activeTab")||"scanner";
+  switchToolTab(saved==="equipment"?"equipment":"scanner");
+  ["eqItemId","eqQuality","eqDamage","eqAccuracy","eqArmor","eqVendor"].forEach(id=>{const el=document.getElementById(id);if(el)el.addEventListener("keydown",e=>{if(e.key==="Enter")checkEquipment();});});
 });
