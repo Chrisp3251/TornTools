@@ -66,8 +66,22 @@
 
   <div id="equipmentView" hidden>
     <section class="panel">
+      <div class="section-head">
+        <div><h2>Your Equipment</h2><p class="muted">Loads weapons and armor directly from your Torn inventory using the API key already connected to TornTools.</p></div>
+        <button id="eqInventoryBtn" class="secondary" onclick="loadEquipmentInventory(true)">Refresh Inventory</button>
+      </div>
+      <div id="eqInventoryStatus" class="research-note">Inventory has not been loaded yet.</div>
+      <div class="table-wrap">
+        <table class="research-table">
+          <thead><tr><th>Item</th><th>Quality</th><th>Stats</th><th>Type</th><th>Status</th><th></th></tr></thead>
+          <tbody id="eqInventoryRows"><tr><td colspan="6" class="muted">Open this tab to load your equipment.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
       <div class="section-head"><div><h2>Equipment Checker</h2><p class="muted">Check whether a plain white weapon or armor roll is worth putting on the market instead of vendoring it.</p></div></div>
-      <div class="research-note">Enter the Torn <strong>Item ID</strong>, the stats shown on your exact copy, and the guaranteed vendor/NPC sell value. For weapons use Quality + Damage + Accuracy. For armor use Quality + Armor. TornTools compares only plain listings with no RW bonuses or rarity.</div>
+      <div class="research-note">Click <strong>Use</strong> above to fill these fields from your inventory, or enter them manually. TornTools compares only plain listings with no RW bonuses or rarity. Vendor value is still entered manually because that is the guaranteed cash-out we compare against.</div>
       <div class="equipment-grid">
         <label>Item ID<input id="eqItemId" type="number" min="1" step="1" placeholder="e.g. Benelli item ID"></label>
         <label>Quality %<input id="eqQuality" type="number" min="0" max="100" step="0.01" placeholder="e.g. 67.42"></label>
@@ -76,9 +90,9 @@
         <label>Armor<input id="eqArmor" type="number" min="0" step="0.01" placeholder="armor only"></label>
         <label>Vendor sell value<input id="eqVendor" type="number" min="0" step="1" placeholder="e.g. 3300"></label>
       </div>
-      <div class="toolbar"><button id="eqCheckBtn" onclick="checkEquipment()">Check Equipment</button><button class="secondary" onclick="clearEquipment()">Clear</button><div class="spacer"></div><span class="muted">Tip: the item ID is visible in Torn item/market URLs.</span></div>
+      <div class="toolbar"><button id="eqCheckBtn" onclick="checkEquipment()">Check Equipment</button><button class="secondary" onclick="clearEquipment()">Clear</button><div class="spacer"></div><span id="eqSelected" class="muted">No inventory item selected.</span></div>
     </section>
-    <section id="equipmentResult"><div class="empty">Enter an item and its stats, then check the market.</div></section>
+    <section id="equipmentResult"><div class="empty">Choose an inventory item above or enter an item and its stats, then check the market.</div></section>
     <section class="notice"><strong>How to read this:</strong> MARKET IT means current comparable asking prices leave a worthwhile premium after Torn's 5% market fee. VENDOR means the current plain market does not appear to pay enough extra. DON'T VENDOR YET protects unusually strong rolls when the current sample is weak or inconclusive.</section>
   </div>
 
