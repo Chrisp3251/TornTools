@@ -22,7 +22,7 @@ ITEMS = {
     283: {"name": "Donator Pack", "mode": "flip", "enabled": False, "note": "High-capital flip candidate"},
 }
 
-app = FastAPI(title="TornTools Local Scanner", version="0.2.0")
+app = FastAPI(title="TornTools Local Scanner", version="0.2.1")
 app.mount("/static", StaticFiles(directory=WEB), name="static")
 
 _api_key: str | None = None
@@ -106,7 +106,6 @@ def analyze_item(item_id: int, listings: list[dict]) -> dict:
     qty_floor = sum(x["amount"] for x in listings if x["price"] == lowest)
     next_higher = next((x["price"] for x in listings if x["price"] > lowest), None)
 
-    # Local reference price for stock-up deals: median of the first 20 listing prices.
     reference_prices = [x["price"] for x in listings[:20]]
     reference = int(statistics.median(reference_prices)) if reference_prices else lowest
     discount_pct = ((reference - lowest) / reference * 100) if reference else 0.0
@@ -162,7 +161,7 @@ async def home():
 async def status():
     return {
         "ok": True,
-        "version": "0.2.0",
+        "version": "0.2.1",
         "key_loaded": bool(_api_key),
         "market_fee_pct": MARKET_FEE * 100,
         "items": [{"id": item_id, **meta} for item_id, meta in ITEMS.items()],
@@ -176,16 +175,14 @@ async def set_key(payload: KeyPayload):
     if not candidate:
         raise HTTPException(400, "API key is blank")
 
-    old_key = _api_key
+    # Do not validate against a market endpoint here. A valid key may lack
+    # market->itemmarket permission, and that should be reported by the scan
+    # instead of making the key look invalid.
     _api_key = candidate
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            await fetch_item_market(client, 206, limit=1)
-    except Exception:
-        _api_key = old_key
-        raise
-
-    return {"ok": True, "message": "API key validated and loaded into memory"}
+    return {
+        "ok": True,
+        "message": "API key loaded into memory. Run a scan to verify market access.",
+    }
 
 
 @app.delete("/api/key")
