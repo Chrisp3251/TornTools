@@ -14,6 +14,7 @@ LEARN_ITEMS={365:"Box of Medical Supplies",367:"Feathery Hotel Coupon",369:"Lott
 DISCOVERY_ITEMS={1219:{"name":"Oxygen Tank"},1460:{"name":"Methane Tank"},1200:{"name":"Nitrous Tank"},883:{"name":"Bank Statement"},1344:{"name":"Medical Bill"},1348:{"name":"Aluminum Plate"},1321:{"name":"Adhesive Plastic"},1082:{"name":"Zip Wallet"},1381:{"name":"ID Badge","hard_floor":105000},1350:{"name":"Police Badge","hard_floor":230000},1379:{"name":"ATM Key","hard_floor":195000},1339:{"name":"Bank Check","hard_floor":180000},1343:{"name":"Passport","hard_floor":580000},1342:{"name":"Travel Visa","hard_floor":122500},1086:{"name":"Driver's License","hard_floor":5000},1345:{"name":"Prescription","hard_floor":75000},1349:{"name":"License Plate","hard_floor":95000}}
 INVENTORY_CATEGORIES=("Primary","Secondary","Melee","Defensive")
 MAX_INVENTORY_DETAILS=80
+ITEM_VALUE_CACHE_SECONDS=600
 
 def load_local_env_key():
     key=os.environ.get("TORN_API_KEY","").strip()
@@ -30,8 +31,9 @@ def load_local_env_key():
     except OSError:return None
     return None
 
-app=FastAPI(title="TornTools Local Scanner",version="0.5.2"); app.mount("/static",StaticFiles(directory=WEB),name="static")
+app=FastAPI(title="TornTools Local Scanner",version="0.5.3"); app.mount("/static",StaticFiles(directory=WEB),name="static")
 _api_key:str|None=load_local_env_key(); _last_scan:dict[str,Any]|None=None
+_item_value_cache={"ts":0.0,"items":{}}
 class KeyPayload(BaseModel): api_key:str
 
 def init_db():
@@ -103,6 +105,29 @@ async def fetch_market(client,i,limit=100):return await _torn_get(client,f"/mark
 async def fetch_inventory_category(client,cat):return await _torn_get(client,"/user/inventory",{"cat":cat,"limit":250,"offset":0},"inventory data")
 async def fetch_item_details(client,uid):return await _torn_get(client,f"/torn/{uid}/itemdetails",error_text="item details")
 
+async def get_base_item(client,item_id):
+    global _item_value_cache
+    now=time.time()
+    if not _item_value_cache["items"] or now-_item_value_cache["ts"]>ITEM_VALUE_CACHE_SECONDS:
+        d=await _torn_get(client,"/torn/items",{"cat":"All","sort":"ASC"},"item values")
+        mapped={}
+        for item in d.get("items") or []:
+            if not isinstance(item,dict):continue
+            try:i=int(item.get("id"))
+            except (TypeError,ValueError):continue
+            mapped[i]=item
+        _item_value_cache={"ts":now,"items":mapped}
+    return _item_value_cache["items"].get(int(item_id))
+
+def base_item_values(item):
+    if not isinstance(item,dict):return {"sell_price":None,"market_price":None,"buy_price":None,"vendor":None}
+    value=item.get("value") if isinstance(item.get("value"),dict) else {}
+    def as_int(name):
+        try:
+            raw=value.get(name); return int(raw) if raw is not None else None
+        except (TypeError,ValueError):return None
+    return {"sell_price":as_int("sell_price"),"market_price":as_int("market_price"),"buy_price":as_int("buy_price"),"vendor":value.get("vendor")}
+
 def inventory_entries(d):
     inv=d.get("inventory") if isinstance(d,dict) else None
     return inv.get("items") or [] if isinstance(inv,dict) else []
@@ -117,7 +142,7 @@ def hydrate_inventory_entry(entry,detail_response,category):
     try:item_id=int(details.get("id") or entry.get("id"))
     except (TypeError,ValueError):return None
     bonuses=details.get("bonuses") or []; rarity=details.get("rarity"); uid=details.get("uid") or entry.get("uid")
-    return {"item_id":item_id,"name":details.get("name") or entry.get("name") or f"Item {item_id}","type":details.get("type") or category,"sub_type":details.get("sub_type"),"uid":uid,"quality":quality,"damage":damage,"accuracy":accuracy,"armor":armor,"rarity":rarity,"bonuses":bonuses,"equipped":bool(entry.get("equipped")),"faction_owned":bool(entry.get("faction_owned")),"plain":not bool(rarity or bonuses),"market_url":market_url(item_id)}
+    return {"item_id":item_id,"name":details.get("name") or entry.get("name") or f"Item {item_id}","category":category,"type":details.get("type") or category,"sub_type":details.get("sub_type"),"uid":uid,"quality":quality,"damage":damage,"accuracy":accuracy,"armor":armor,"rarity":rarity,"bonuses":bonuses,"equipped":bool(entry.get("equipped")),"faction_owned":bool(entry.get("faction_owned")),"plain":not bool(rarity or bonuses),"market_url":market_url(item_id)}
 
 def floor_data(listings):
     if not listings:return None,None,None
@@ -193,7 +218,7 @@ def equipment_verdict(rows,quality,damage,accuracy,armor,vendor_sell):
 @app.get("/")
 async def home():return FileResponse(WEB/"index.html")
 @app.get("/api/status")
-async def status():return {"ok":True,"version":"0.5.2","key_loaded":bool(_api_key),"key_source":"local .env / environment" if _api_key else None,"market_fee_pct":5,"items":[{"id":i,**m} for i,m in ITEMS.items()],"discovery_count":len(DISCOVERY_ITEMS),"discovery_ids":list(DISCOVERY_ITEMS)}
+async def status():return {"ok":True,"version":"0.5.3","key_loaded":bool(_api_key),"key_source":"local .env / environment" if _api_key else None,"market_fee_pct":5,"items":[{"id":i,**m} for i,m in ITEMS.items()],"discovery_count":len(DISCOVERY_ITEMS),"discovery_ids":list(DISCOVERY_ITEMS)}
 @app.post("/api/key")
 async def set_key(p:KeyPayload):
     global _api_key
@@ -276,15 +301,26 @@ async def equipment_inventory():
     items.sort(key=lambda x:(not x["plain"],x["name"].lower(),-(x["quality"] or 0)))
     return {"ok":True,"items":items,"count":len(items),"inventory_candidates":len(entries),"truncated":truncated,"detail_errors":detail_errors,"category_errors":category_errors,"categories":list(INVENTORY_CATEGORIES)}
 
+@app.get("/api/equipment/values")
+async def equipment_values(item_id:int):
+    if item_id<=0:raise HTTPException(400,"Enter a valid item ID")
+    async with httpx.AsyncClient(timeout=20) as client:item=await get_base_item(client,item_id)
+    if not item:raise HTTPException(404,f"Torn item {item_id} was not found")
+    vals=base_item_values(item)
+    return {"ok":True,"item_id":item_id,"name":item.get("name") or f"Item {item_id}",**vals}
+
 @app.get("/api/equipment/check")
-async def check_equipment(item_id:int,quality:float,damage:float|None=None,accuracy:float|None=None,armor:float|None=None,vendor_sell:int=0):
+async def check_equipment(item_id:int,quality:float,damage:float|None=None,accuracy:float|None=None,armor:float|None=None,vendor_sell:int|None=None):
     if item_id<=0:raise HTTPException(400,"Enter a valid item ID")
     if quality<0 or quality>100:raise HTTPException(400,"Quality must be between 0 and 100")
-    if vendor_sell<0:raise HTTPException(400,"Vendor value cannot be negative")
-    async with httpx.AsyncClient(timeout=20) as client:d=await fetch_market(client,item_id,100)
-    rows,meta=equipment_rows(d)
+    if vendor_sell is not None and vendor_sell<0:raise HTTPException(400,"Vendor value cannot be negative")
+    async with httpx.AsyncClient(timeout=20) as client:
+        market_data,base_item=await asyncio.gather(fetch_market(client,item_id,100),get_base_item(client,item_id))
+    rows,meta=equipment_rows(market_data)
     if not rows:raise HTTPException(400,"No plain weapon/armor listings with stats were returned for this item")
-    result=equipment_verdict(rows,quality,damage,accuracy,armor,vendor_sell)
-    return {"ok":True,"item_id":item_id,"name":meta.get("name") or f"Item {item_id}","type":meta.get("type"),"market_average":meta.get("average_price"),"vendor_sell":vendor_sell,"your_stats":{"quality":quality,"damage":damage,"accuracy":accuracy,"armor":armor},"market_url":market_url(item_id),"cache":market_cache_meta(d),**result}
+    vals=base_item_values(base_item)
+    resolved_vendor=vendor_sell if vendor_sell is not None and vendor_sell>0 else (vals.get("sell_price") or 0)
+    result=equipment_verdict(rows,quality,damage,accuracy,armor,resolved_vendor)
+    return {"ok":True,"item_id":item_id,"name":meta.get("name") or (base_item or {}).get("name") or f"Item {item_id}","type":meta.get("type"),"market_average":meta.get("average_price"),"torn_market_price":vals.get("market_price"),"vendor_sell":resolved_vendor,"vendor_sell_source":"manual" if vendor_sell is not None and vendor_sell>0 else "torn","buy_price":vals.get("buy_price"),"vendor":vals.get("vendor"),"your_stats":{"quality":quality,"damage":damage,"accuracy":accuracy,"armor":armor},"market_url":market_url(item_id),"cache":market_cache_meta(market_data),**result}
 @app.get("/api/last-scan")
 async def last_scan():return _last_scan or {"ok":True,"scanned_at":None,"items":[]}
