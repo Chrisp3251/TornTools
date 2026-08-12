@@ -32,7 +32,7 @@ def load_local_env_key():
         return None
     return None
 
-app=FastAPI(title="TornTools Local Scanner",version="0.4.3"); app.mount("/static",StaticFiles(directory=WEB),name="static")
+app=FastAPI(title="TornTools Local Scanner",version="0.4.4"); app.mount("/static",StaticFiles(directory=WEB),name="static")
 _api_key:str|None=load_local_env_key(); _last_scan:dict[str,Any]|None=None
 class KeyPayload(BaseModel): api_key:str
 
@@ -62,6 +62,31 @@ def parse_itemmarket(d):
             if p>0: out.append({"id":r.get("id"),"price":p,"amount":a})
         except (KeyError,TypeError,ValueError): pass
     out.sort(key=lambda x:x["price"]); return out,avg
+
+def market_cache_meta(d):
+    """Read Torn's global-cache metadata from either supported response location."""
+    candidates=[]
+    if isinstance(d,dict):
+        candidates.append(d)
+        if isinstance(d.get("itemmarket"),dict): candidates.append(d["itemmarket"])
+    cache_ts=None; cache_delay=None
+    for obj in candidates:
+        if cache_ts is None:
+            raw=obj.get("cache_timestamp")
+            try: cache_ts=int(raw) if raw is not None else None
+            except (TypeError,ValueError): pass
+        if cache_delay is None:
+            raw=obj.get("cache_delay")
+            try: cache_delay=int(raw) if raw is not None else None
+            except (TypeError,ValueError): pass
+    if cache_delay is None: cache_delay=30
+    age=max(0,int(time.time()-cache_ts)) if cache_ts else None
+    if age is None: label="UNKNOWN"
+    elif age < 10: label="FRESH"
+    elif age < cache_delay: label="RECENT"
+    else: label="CACHE DUE"
+    return {"cache_timestamp":cache_ts,"cache_delay":cache_delay,"cache_age_seconds":age,"freshness":label}
+
 async def fetch_market(client,i,limit=100):
     if not _api_key: raise HTTPException(401,"Load your Torn API key first")
     try:
@@ -100,16 +125,16 @@ def analyze_main(i,listings,avg):
     if nxt:
         each=int(nxt*(1-MARKET_FEE))-low; roi=each/low*100; profit=each*qty
     return {"id":i,**meta,"lowest":low,"qty_floor":qty,"next_higher":nxt,"reference":ref,"average_price":avg,"discount_pct":disc,"net_roi_after_fee":roi,"floor_clear_capital":low*qty,"floor_clear_profit_after_fee":profit,"market_url":market_url(i)}
-def discovery_result(i,meta,listings,avg):
-    if not listings:return {"id":i,"name":meta["name"],"error":"No listings","market_url":market_url(i)}
+def discovery_result(i,meta,listings,avg,cache=None):
+    if not listings:return {"id":i,"name":meta["name"],"error":"No listings","market_url":market_url(i),**(cache or {})}
     low,qty,_=floor_data(listings); floor=meta.get("hard_floor"); ref=avg or low; disc=(ref-low)/ref*100 if ref else 0
     fp=(floor-low)*qty if floor and low<floor else 0; fd=(floor-low)/floor*100 if fp else 0; liq=liquidity_stats(i)
     score=1000+fd*10+min(300,fp/1000) if fp else max(0,disc*8+liq["score"]*.6); kind="NPC FLOOR" if fp else "UNDER MARKET" if disc>=8 else "WATCH"
-    return {"id":i,"name":meta["name"],"lowest":low,"qty_floor":qty,"market_value":avg,"discount_pct":round(disc,2),"hard_floor":floor,"floor_profit":fp,"floor_discount_pct":round(fd,2),"kind":kind,"deal_score":round(score,2),"activity":liq["label"],"samples":liq["observations"],"market_url":market_url(i)}
+    return {"id":i,"name":meta["name"],"lowest":low,"qty_floor":qty,"market_value":avg,"discount_pct":round(disc,2),"hard_floor":floor,"floor_profit":fp,"floor_discount_pct":round(fd,2),"kind":kind,"deal_score":round(score,2),"activity":liq["label"],"samples":liq["observations"],"market_url":market_url(i),**(cache or {})}
 @app.get("/")
 async def home():return FileResponse(WEB/"index.html")
 @app.get("/api/status")
-async def status():return {"ok":True,"version":"0.4.3","key_loaded":bool(_api_key),"key_source":"local .env / environment" if _api_key else None,"market_fee_pct":5,"items":[{"id":i,**m} for i,m in ITEMS.items()],"discovery_count":len(DISCOVERY_ITEMS),"discovery_ids":list(DISCOVERY_ITEMS)}
+async def status():return {"ok":True,"version":"0.4.4","key_loaded":bool(_api_key),"key_source":"local .env / environment" if _api_key else None,"market_fee_pct":5,"items":[{"id":i,**m} for i,m in ITEMS.items()],"discovery_count":len(DISCOVERY_ITEMS),"discovery_ids":list(DISCOVERY_ITEMS)}
 @app.post("/api/key")
 async def set_key(p:KeyPayload):
     global _api_key
@@ -170,7 +195,7 @@ async def discover_hidden_deals(ids:str=Query(default="")):
     for i,r in zip(requested,results):
         meta=DISCOVERY_ITEMS[i]
         if isinstance(r,Exception):out.append({"id":i,"name":meta["name"],"error":str(getattr(r,"detail",r))});continue
-        l,a=parse_itemmarket(r);save_snapshot(i,l,a);out.append(discovery_result(i,meta,l,a))
+        l,a=parse_itemmarket(r); cache=market_cache_meta(r); save_snapshot(i,l,a); out.append(discovery_result(i,meta,l,a,cache))
     out.sort(key=lambda x:x.get("deal_score",-1),reverse=True);return {"ok":True,"scanned_at":time.time(),"items":out,"batch_ids":requested,"pool_count":len(DISCOVERY_ITEMS)}
 @app.get("/api/last-scan")
 async def last_scan():return _last_scan or {"ok":True,"scanned_at":None,"items":[]}
