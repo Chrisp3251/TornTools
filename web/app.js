@@ -2,10 +2,10 @@ const money = new Intl.NumberFormat("en-US", {style:"currency", currency:"USD", 
 
 let timer=null, learnTimer=null, discoverTimer=null, learnCountdownTimer=null, discoverCountdownTimer=null;
 let metadata=[], discoveryIds=[], discoverBatchIndex=0, hiddenResults=new Map();
-let lastAlertKey=null, hiddenAlertState=new Map(), lastResearchCandidates=new Set();
+let lastAlertKey=null, hiddenAlertState=new Map(), hiddenCacheState=new Map(), lastResearchCandidates=new Set();
+let discoverRunning=false;
 
-const DISCOVER_BATCH_SIZE=3;
-const DISCOVER_BATCH_SECONDS=5;
+const DISCOVER_ITEM_SECONDS=1;
 const $=id=>document.getElementById(id);
 
 async function call(path,opts={}) {
@@ -101,12 +101,22 @@ function updateNotificationButton(){const b=$("notifyBtn");if(!b)return;if(!("No
 async function enableNotifications(){if(!("Notification" in window))return;try{await Notification.requestPermission();updateNotificationButton()}catch{}}
 
 function cacheAge(x){if(!x.cache_timestamp)return null;return Math.max(0,Math.floor(Date.now()/1000-Number(x.cache_timestamp)))}
+
+function recordHiddenSnapshot(x){
+  if(!x||x.error)return;
+  const id=Number(x.id),ts=Number(x.cache_timestamp||0),now=Date.now(),prior=hiddenCacheState.get(id);
+  if(!prior){hiddenCacheState.set(id,{lastTimestamp:ts,changedAt:now,requestsSinceChange:0,lastRequestAt:now});return}
+  const changed=!!ts&&!!prior.lastTimestamp&&ts!==prior.lastTimestamp;
+  hiddenCacheState.set(id,{lastTimestamp:ts||prior.lastTimestamp,changedAt:changed?now:prior.changedAt,requestsSinceChange:changed?0:(prior.requestsSinceChange||0)+1,lastRequestAt:now});
+}
+
 function freshnessInfo(x){
-  const age=cacheAge(x),delay=Number(x.cache_delay||30);
-  if(age===null)return{label:"UNKNOWN",text:"Unknown cache age",className:"fresh-unknown",age:null,delay};
-  if(age<10)return{label:"FRESH",text:`Fresh · ${age}s old`,className:"fresh-good",age,delay};
-  if(age<delay)return{label:"RECENT",text:`Recent · ${age}s old`,className:"fresh-recent",age,delay};
-  return{label:"CACHE DUE",text:`Cached · ${age}s old`,className:"fresh-stale",age,delay};
+  const age=cacheAge(x),delay=Number(x.cache_delay||30),state=hiddenCacheState.get(Number(x.id));
+  if(!state)return{label:"TRACKING",text:"First snapshot",className:"fresh-unknown",age,delay};
+  const justChanged=state.changedAt&&Date.now()-state.changedAt<12000&&state.requestsSinceChange===0;
+  if(justChanged)return{label:"NEW SNAPSHOT",text:"New Torn cache detected",className:"fresh-good",age,delay};
+  if(state.requestsSinceChange>0)return{label:"REFRESH PENDING",text:"Waiting for Torn's next global snapshot",className:"fresh-recent",age,delay};
+  return{label:"TRACKING",text:"Watching cache timestamp",className:"fresh-unknown",age,delay};
 }
 
 function renderDiscovery(items){
@@ -116,8 +126,9 @@ function renderDiscovery(items){
     if(x.error)return`<tr><td><strong>${x.name}</strong></td><td colspan="7" class="bad">${x.error}</td><td></td></tr>`;
     const f=freshnessInfo(x),high=x.kind==="NPC FLOOR",normal=x.kind==="UNDER MARKET"&&Number(x.discount_pct||0)>=15,mild=x.kind==="UNDER MARKET"&&!normal;
     const rowClass=high?"priority-hit":normal?"research-hit":mild?"mild-hit":"";
-    const potential=x.floor_profit>0?`${money.format(x.floor_profit)} guaranteed spread`:(x.discount_pct>=8?`${x.discount_pct.toFixed(1)}% under market`:"—");
-    return`<tr class="${rowClass}"><td><strong>${x.name}</strong><br><small class="muted">${x.activity||"Learning"} · ${x.samples||0} samples</small></td><td><strong>${x.kind}</strong></td><td><span class="freshness ${f.className}">${f.label}</span><br><small class="muted">${f.age===null?"timestamp unavailable":`${f.age}s old · ${f.delay}s cache`}</small></td><td>${money.format(x.lowest||0)}${x.qty_floor>1?` × ${x.qty_floor}`:""}</td><td>${x.market_value?money.format(x.market_value):"—"}</td><td>${Number(x.discount_pct||0).toFixed(1)}%</td><td>${x.hard_floor?money.format(x.hard_floor):"—"}</td><td>${potential}</td><td><button class="mini-btn" onclick="window.open('${x.market_url}','_blank','noopener')">Open</button></td></tr>`;
+    const potential=x.floor_profit>0?`${money.format(x.floor_profit)} direct cash-out spread`:(x.discount_pct>=8?`${x.discount_pct.toFixed(1)}% under market`:"—");
+    const ageText=f.age===null?"Torn cache timestamp unavailable":`Torn snapshot ${f.age}s old · ${f.delay}s enforced delay`;
+    return`<tr class="${rowClass}"><td><strong>${x.name}</strong><br><small class="muted">${x.activity||"Learning"} · ${x.samples||0} samples</small></td><td><strong>${x.kind}</strong></td><td><span class="freshness ${f.className}">${f.label}</span><br><small class="muted">${ageText}</small></td><td>${money.format(x.lowest||0)}${x.qty_floor>1?` × ${x.qty_floor}`:""}</td><td>${x.market_value?money.format(x.market_value):"—"}</td><td>${Number(x.discount_pct||0).toFixed(1)}%</td><td>${x.hard_floor?money.format(x.hard_floor):"—"}</td><td>${potential}</td><td><button class="mini-btn" onclick="window.open('${x.market_url}','_blank','noopener')">Open</button></td></tr>`;
   }).join("");
 }
 
@@ -127,11 +138,10 @@ function processHiddenAlerts(items){
     let priority=null;if(x.kind==="NPC FLOOR")priority="high";else if(x.kind==="UNDER MARKET"&&Number(x.discount_pct||0)>=15)priority="normal";
     const prior=hiddenAlertState.get(Number(x.id))||null;
     if(!priority){hiddenAlertState.set(Number(x.id),null);continue}
-    const f=freshnessInfo(x),signature=`${x.cache_timestamp||0}:${x.lowest}:${x.qty_floor}:${x.kind}`;
+    const signature=`${x.cache_timestamp||0}:${x.lowest}:${x.qty_floor}:${x.kind}`;
     hiddenAlertState.set(Number(x.id),signature);
     if(prior===signature)continue;
-    if(f.age!==null&&f.age>f.delay)continue;
-    const ageText=f.age===null?"cache age unknown":`${f.age}s-old Torn snapshot`;
+    const age=cacheAge(x),ageText=age===null?"Torn cache age unknown":`${age}s-old Torn snapshot`;
     const body=x.kind==="NPC FLOOR"?`${money.format(x.lowest)} buy · ${money.format(x.hard_floor)} NPC floor · ${money.format(x.floor_profit||0)} spread · ${ageText}`:`${money.format(x.lowest)} buy · ${Number(x.discount_pct||0).toFixed(1)}% below market · ${ageText}`;
     notify(`${priority==="high"?"HIGH PRIORITY · ":""}${x.name}`,body,x.market_url,priority);
   }
@@ -144,23 +154,47 @@ function processResearchCandidates(items){
 function startCountdown(kind,seconds){
   const isLearn=kind==="learn",state=$(isLearn?"learnState":"discoverState"),next=$(isLearn?"learnNext":"discoverNext"),progress=$(isLearn?"learnProgress":"discoverProgress");
   if(isLearn&&learnCountdownTimer)clearInterval(learnCountdownTimer);if(!isLearn&&discoverCountdownTimer)clearInterval(discoverCountdownTimer);
-  let remaining=seconds;state.textContent=isLearn?"● Quiet Learning active":`● Cache-aware Hidden scan · ${DISCOVER_BATCH_SIZE} items/batch`;state.className="status-dot live";
-  const tick=()=>{next.textContent=`Next ${isLearn?"sample":"batch"}: ${Math.floor(remaining/60)}m ${String(remaining%60).padStart(2,"0")}s`;progress.style.width=`${Math.max(0,Math.min(100,(1-remaining/seconds)*100))}%`;if(remaining<=0)remaining=seconds;else remaining--};tick();const h=setInterval(tick,1000);if(isLearn)learnCountdownTimer=h;else discoverCountdownTimer=h;
+  let remaining=seconds;state.textContent=isLearn?"● Quiet Learning active":"● Hidden scan active";state.className="status-dot live";
+  const tick=()=>{next.textContent=`Next ${isLearn?"sample":"check"}: ${Math.floor(remaining/60)}m ${String(remaining%60).padStart(2,"0")}s`;progress.style.width=`${Math.max(0,Math.min(100,(1-remaining/seconds)*100))}%`;if(remaining<=0)remaining=seconds;else remaining--};tick();const h=setInterval(tick,1000);if(isLearn)learnCountdownTimer=h;else discoverCountdownTimer=h;
 }
-function stopCountdown(kind){const isLearn=kind==="learn",h=isLearn?learnCountdownTimer:discoverCountdownTimer;if(h)clearInterval(h);if(isLearn)learnCountdownTimer=null;else discoverCountdownTimer=null;const state=$(isLearn?"learnState":"discoverState"),next=$(isLearn?"learnNext":"discoverNext"),progress=$(isLearn?"learnProgress":"discoverProgress");state.textContent=isLearn?"● Learning idle":"● Hidden scan idle";state.className="status-dot idle";next.textContent=`Next ${isLearn?"sample":"batch"}: —`;progress.style.width="0%"}
+function stopCountdown(kind){const isLearn=kind==="learn",h=isLearn?learnCountdownTimer:discoverCountdownTimer;if(h)clearInterval(h);if(isLearn)learnCountdownTimer=null;else discoverCountdownTimer=null;const state=$(isLearn?"learnState":"discoverState"),next=$(isLearn?"learnNext":"discoverNext"),progress=$(isLearn?"learnProgress":"discoverProgress");state.textContent=isLearn?"● Learning idle":"● Hidden scan idle";state.className="status-dot idle";next.textContent=`Next ${isLearn?"sample":"check"}: —`;progress.style.width="0%"}
 
 async function learnNow(){$("learnBtn").disabled=true;$("learnBtn").textContent="Sampling…";try{const d=await call("/api/learn",{method:"POST"});renderLiquidity(d.items||[]);processResearchCandidates(d.items||[]);$("learnUpdated").textContent=`Last sample ${new Date(d.learned_at*1000).toLocaleTimeString()}`;if(learnTimer)startCountdown("learn",120)}catch(e){msg(e.message,true)}finally{$("learnBtn").disabled=false;$("learnBtn").textContent="Sample Research Markets"}}
 function stopLearnAuto(){if(learnTimer)clearInterval(learnTimer);learnTimer=null;$("learnAutoBtn").textContent="Start Quiet Learning";$("learnAutoBtn").classList.add("secondary");stopCountdown("learn")}
 function toggleLearnAuto(){if(learnTimer)return stopLearnAuto();learnNow();learnTimer=setInterval(learnNow,120000);$("learnAutoBtn").textContent="Stop Quiet Learning (2m)";$("learnAutoBtn").classList.remove("secondary");startCountdown("learn",120)}
 
-function nextDiscoveryBatch(){if(!discoveryIds.length)return[];const batch=[];for(let n=0;n<Math.min(DISCOVER_BATCH_SIZE,discoveryIds.length);n++)batch.push(discoveryIds[(discoverBatchIndex+n)%discoveryIds.length]);discoverBatchIndex=(discoverBatchIndex+DISCOVER_BATCH_SIZE)%discoveryIds.length;return batch}
-async function discoverNow(batchIds=null){
-  const isBatch=Array.isArray(batchIds)&&batchIds.length>0;if(!isBatch){$("discoverBtn").disabled=true;$("discoverBtn").textContent="Scanning full pool…"}
-  try{const suffix=isBatch?`?ids=${encodeURIComponent(batchIds.join(","))}`:"",d=await call(`/api/discover${suffix}`,{method:"POST"});for(const x of d.items||[])hiddenResults.set(Number(x.id),x);renderDiscovery([...hiddenResults.values()]);processHiddenAlerts(d.items||[]);$("discoverUpdated").textContent=`Last batch ${new Date(d.scanned_at*1000).toLocaleTimeString()} · ${hiddenResults.size}/${d.pool_count||discoveryIds.length} items seen`;if(discoverTimer)startCountdown("discover",DISCOVER_BATCH_SECONDS)}catch(e){msg(e.message,true)}finally{if(!isBatch){$("discoverBtn").disabled=false;$("discoverBtn").textContent="Scan Full Hidden Pool"}}
+async function discoverNow(itemIds=null){
+  const isAuto=Array.isArray(itemIds)&&itemIds.length>0;
+  if(!isAuto){$("discoverBtn").disabled=true;$("discoverBtn").textContent="Scanning full pool…"}
+  try{
+    const suffix=isAuto?`?ids=${encodeURIComponent(itemIds.join(","))}`:"",d=await call(`/api/discover${suffix}`,{method:"POST"});
+    for(const x of d.items||[]){recordHiddenSnapshot(x);hiddenResults.set(Number(x.id),x)}
+    renderDiscovery([...hiddenResults.values()]);processHiddenAlerts(d.items||[]);
+    $("discoverUpdated").textContent=`Last check ${new Date(d.scanned_at*1000).toLocaleTimeString()} · ${hiddenResults.size}/${d.pool_count||discoveryIds.length} items seen`;
+    if(discoverRunning&&discoveryIds.length){const progress=(discoverBatchIndex%discoveryIds.length)/discoveryIds.length*100;$("discoverProgress").style.width=`${progress}%`}
+  }catch(e){msg(e.message,true)}finally{if(!isAuto){$("discoverBtn").disabled=false;$("discoverBtn").textContent="Scan Full Hidden Pool"}}
 }
-async function runDiscoveryBatch(){const batch=nextDiscoveryBatch();if(batch.length)await discoverNow(batch)}
-function stopDiscoverAuto(){if(discoverTimer)clearInterval(discoverTimer);discoverTimer=null;$("discoverAutoBtn").textContent="Start Cache-Aware Hidden Scan";$("discoverAutoBtn").classList.add("secondary");stopCountdown("discover")}
-function toggleDiscoverAuto(){if(discoverTimer)return stopDiscoverAuto();discoverBatchIndex=0;runDiscoveryBatch();discoverTimer=setInterval(runDiscoveryBatch,DISCOVER_BATCH_SECONDS*1000);$("discoverAutoBtn").textContent="Stop Hidden Scan (5s batches)";$("discoverAutoBtn").classList.remove("secondary");startCountdown("discover",DISCOVER_BATCH_SECONDS)}
+
+async function runDiscoveryItem(){
+  if(!discoverRunning||!discoveryIds.length)return;
+  const id=discoveryIds[discoverBatchIndex%discoveryIds.length];discoverBatchIndex=(discoverBatchIndex+1)%discoveryIds.length;
+  await discoverNow([id]);
+  if(discoverRunning)discoverTimer=setTimeout(runDiscoveryItem,DISCOVER_ITEM_SECONDS*1000);
+}
+
+function stopDiscoverAuto(){
+  discoverRunning=false;if(discoverTimer)clearTimeout(discoverTimer);discoverTimer=null;
+  $("discoverAutoBtn").textContent="Start Smart Hidden Scan";$("discoverAutoBtn").classList.add("secondary");stopCountdown("discover");
+}
+function toggleDiscoverAuto(){
+  if(discoverRunning)return stopDiscoverAuto();
+  discoverRunning=true;discoverBatchIndex=0;
+  $("discoverAutoBtn").textContent="Stop Smart Hidden Scan";$("discoverAutoBtn").classList.remove("secondary");
+  $("discoverState").textContent="● Smart Hidden scan · 1 item/second";$("discoverState").className="status-dot live";
+  $("discoverNext").textContent=`Full ${discoveryIds.length||17}-item pass ≈ ${discoveryIds.length||17}s · detects Torn cache changes continuously`;
+  $("discoverProgress").style.width="0%";
+  runDiscoveryItem();
+}
 
 ["interval","minProfit","minRoi","stockDiscount","sound","hiddenSound"].forEach(id=>document.addEventListener("change",e=>{if(e.target.id===id)saveSettings()}));
 $("key").addEventListener("keydown",e=>{if(e.key==="Enter")loadKey()});
