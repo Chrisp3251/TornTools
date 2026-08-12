@@ -1,53 +1,110 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Torn Market Scanner</title>
+  <title>TornTools Market Scanner</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <main>
-  <header>
+  <header class="topbar">
     <div>
-      <h1>Torn Market Scanner</h1>
-      <p>V0.1 · localhost proof-of-concept</p>
+      <div class="eyebrow">LOCAL MARKET TOOL</div>
+      <h1>TornTools Market Scanner</h1>
+      <p>V0.2 · stock-up + arbitrage dashboard</p>
     </div>
-    <span id="status">Checking…</span>
+    <span id="status" class="pill">Checking…</span>
   </header>
 
   <section class="panel">
-    <h2>API Key</h2>
-    <p class="muted">V0.1 keeps the key in RAM only. Restarting the server forgets it.</p>
+    <div class="section-head">
+      <div>
+        <h2>API Connection</h2>
+        <p class="muted">Your limited Torn API key stays in backend memory only.</p>
+      </div>
+    </div>
     <div class="row">
-      <input id="key" type="password" placeholder="Paste a fresh LIMITED Torn API key">
-      <button onclick="loadKey()">Load Key</button>
+      <input id="key" type="password" autocomplete="off" placeholder="Paste a fresh LIMITED Torn API key">
+      <button id="loadKeyBtn" onclick="loadKey()">Load Key</button>
       <button class="secondary" onclick="forgetKey()">Forget</button>
     </div>
     <div id="msg"></div>
   </section>
 
-  <section class="toolbar">
-    <button onclick="refreshMarket()">Refresh Xanax</button>
-    <label><input id="auto" type="checkbox" onchange="toggleAuto()"> Auto-refresh 30 sec</label>
-    <button class="secondary" onclick="window.open(marketUrl,'_blank')">Open Market</button>
+  <section class="panel controls">
+    <div class="section-head">
+      <div>
+        <h2>Scanner Controls</h2>
+        <p class="muted">Stock-up items look for discounts. Flip items look for resale spread after the 5% market fee.</p>
+      </div>
+    </div>
+
+    <div class="control-grid">
+      <label>Scan interval
+        <select id="interval">
+          <option value="15">15 sec</option>
+          <option value="30" selected>30 sec</option>
+          <option value="60">60 sec</option>
+          <option value="120">2 min</option>
+        </select>
+      </label>
+      <label>Min flip profit
+        <input id="minProfit" type="number" min="0" step="10000" value="125000">
+      </label>
+      <label>Min flip ROI
+        <input id="minRoi" type="number" min="0" step="0.5" value="6">
+      </label>
+      <label>Stock-up discount
+        <input id="stockDiscount" type="number" min="0" step="0.5" value="2.5">
+      </label>
+    </div>
+
+    <div class="watchlist" id="watchlist"></div>
+
+    <div class="toolbar">
+      <button id="scanBtn" onclick="scanNow()">Scan Now</button>
+      <button id="autoBtn" class="secondary" onclick="toggleAuto()">Start Auto Scan</button>
+      <label class="check"><input id="sound" type="checkbox"> Sound only for strong deals</label>
+      <div class="spacer"></div>
+      <span id="lastUpdated" class="muted">Not scanned yet</span>
+    </div>
   </section>
 
-  <section class="cards">
-    <div class="card"><span>Lowest</span><strong id="low">—</strong><small id="qty">—</small></div>
-    <div class="card"><span>Next Higher</span><strong id="next">—</strong><small>first price above floor</small></div>
-    <div class="card"><span>Net After 5% Fee</span><strong id="profit">—</strong><small id="roi">—</small></div>
+  <section class="summary-grid">
+    <article class="summary-card">
+      <span>Watching</span>
+      <strong id="watchingCount">0</strong>
+      <small>items enabled</small>
+    </article>
+    <article class="summary-card">
+      <span>Deals now</span>
+      <strong id="dealCount">0</strong>
+      <small>meeting your thresholds</small>
+    </article>
+    <article class="summary-card">
+      <span>Best current opportunity</span>
+      <strong id="bestDeal">—</strong>
+      <small id="bestDealSub">Nothing scanned yet</small>
+    </article>
   </section>
 
   <section class="panel">
-    <h2>Top Listings</h2>
-    <table>
-      <thead><tr><th>#</th><th>Price</th><th>Qty</th></tr></thead>
-      <tbody id="rows"><tr><td colspan="3" class="muted">Load a key and refresh.</td></tr></tbody>
-    </table>
+    <div class="section-head">
+      <div>
+        <h2>Live Opportunities</h2>
+        <p class="muted">Green cards meet your current thresholds. Gray cards are informational only.</p>
+      </div>
+    </div>
+    <div id="cards" class="cards">
+      <div class="empty">Load your API key, choose what to watch, then scan.</div>
+    </div>
+  </section>
+
+  <section class="notice">
+    <strong>V0.2 behavior:</strong> read-only market analysis only. It does not buy, list, trade, or perform any Torn action for you.
   </section>
 </main>
-
 <script src="/static/app.js"></script>
 </body>
 </html>
