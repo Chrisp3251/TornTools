@@ -66,7 +66,7 @@ function renderWatchlist() {
       <label class="watch-chip ${item.mode}">
         <input class="watch-toggle" type="checkbox" value="${item.id}" ${checked ? "checked" : ""} onchange="watchChanged()">
         <span class="watch-name">${item.name}</span>
-        <span class="mode-tag">${item.mode === "stock" ? "KEEP / STOCK" : "FLIP"}</span>
+        <span class="mode-tag">${item.mode === "stock" ? "PERSONAL USE" : "RESALE"}</span>
         <small>${item.note}</small>
       </label>
     `);
@@ -85,10 +85,10 @@ async function loadKey() {
   if (!key) return msg("Paste a key first.", true);
   try {
     document.getElementById("loadKeyBtn").disabled = true;
-    msg("Loading key into backend memory…");
+    msg("Loading key…");
     const result = await call("/api/key", {method:"POST", body:JSON.stringify({api_key:key})});
     document.getElementById("key").value = "";
-    msg(result.message || "Key loaded. Run a scan to verify market access.");
+    msg(result.message || "Key loaded.");
     await status();
     await scanNow();
   } catch(e) { msg(e.message, true); }
@@ -127,32 +127,39 @@ function card(item) {
   if (item.error) {
     return `<article class="deal-card error-card"><div class="card-top"><div><h3>${item.name}</h3><span class="mode-tag">ERROR</span></div></div><p>${item.error}</p></article>`;
   }
+
   const deal = isDeal(item);
-  const stock = item.mode === "stock";
-  const headline = stock
-    ? `${Number(item.discount_pct || 0).toFixed(2)}% below local reference`
-    : `${money.format(item.floor_clear_profit_after_fee || 0)} floor-clear net`;
-  const sub = stock
-    ? `Reference ${money.format(item.reference)} · useful to keep rather than resell`
-    : `${Number(item.net_roi_after_fee || 0).toFixed(2)}% after 5% market fee`;
+  const personal = item.mode === "stock";
+  const discount = Number(item.discount_pct || 0);
+  const profit = Number(item.floor_clear_profit_after_fee || 0);
+  const roi = Number(item.net_roi_after_fee || 0);
+
   return `
     <article class="deal-card ${deal ? "deal" : ""}">
       <div class="card-top">
         <div>
           <h3>${item.name}</h3>
-          <span class="mode-tag">${stock ? "KEEP / STOCK" : "FLIP"}</span>
+          <span class="mode-tag">${personal ? "PERSONAL USE" : "RESALE"}</span>
         </div>
-        <span class="deal-badge">${deal ? "DEAL" : "WATCH"}</span>
+        <span class="deal-badge">${deal ? "GOOD BUY" : "WATCH"}</span>
       </div>
+
       <div class="hero-price">${money.format(item.lowest)}</div>
-      <div class="hero-sub">${item.qty_floor} item(s) at floor</div>
+      <div class="hero-sub">${item.qty_floor} available at this price</div>
+
       <div class="metric-list">
-        <div><span>${stock ? "Discount" : "Floor-clear profit"}</span><strong>${headline}</strong></div>
-        <div><span>${stock ? "Context" : "Net ROI"}</span><strong>${sub}</strong></div>
-        <div><span>Next higher</span><strong>${item.next_higher ? money.format(item.next_higher) : "—"}</strong></div>
-        ${stock ? "" : `<div><span>Capital to clear floor</span><strong>${money.format(item.floor_clear_capital || 0)}</strong></div>`}
+        ${personal ? `
+          <div><span>Typical price</span><strong>${money.format(item.reference || 0)}</strong></div>
+          <div><span>Discount</span><strong>${discount.toFixed(2)}%</strong></div>
+        ` : `
+          <div><span>Estimated profit</span><strong>${money.format(profit)}</strong></div>
+          <div><span>ROI after fee</span><strong>${roi.toFixed(2)}%</strong></div>
+          <div><span>Total buy cost</span><strong>${money.format(item.floor_clear_capital || 0)}</strong></div>
+        `}
+        <div><span>Next listing</span><strong>${item.next_higher ? money.format(item.next_higher) : "—"}</strong></div>
       </div>
-      <button class="open-market" onclick="window.open('${item.market_url}','_blank','noopener')">Open ${item.name} Market</button>
+
+      <button class="open-market" onclick="window.open('${item.market_url}','_blank','noopener')">Open Market</button>
     </article>
   `;
 }
@@ -181,16 +188,18 @@ function renderScan(data) {
   const host = document.getElementById("cards");
   host.innerHTML = items.length ? items.map(card).join("") : `<div class="empty">Nothing selected.</div>`;
   document.getElementById("dealCount").textContent = deals.length;
+
   if (deals.length) {
     const best = deals[0];
     document.getElementById("bestDeal").textContent = best.name;
     document.getElementById("bestDealSub").textContent = best.mode === "stock"
-      ? `${best.discount_pct.toFixed(2)}% below local reference`
-      : `${money.format(best.floor_clear_profit_after_fee)} · ${best.net_roi_after_fee.toFixed(2)}% ROI`;
+      ? `${best.discount_pct.toFixed(2)}% below typical price`
+      : `${money.format(best.floor_clear_profit_after_fee)} estimated profit · ${best.net_roi_after_fee.toFixed(2)}% ROI`;
   } else {
     document.getElementById("bestDeal").textContent = "None";
-    document.getElementById("bestDealSub").textContent = "No item meets your thresholds right now";
+    document.getElementById("bestDealSub").textContent = "Nothing meets your buy settings right now";
   }
+
   document.getElementById("lastUpdated").textContent = `Updated ${new Date(data.scanned_at * 1000).toLocaleTimeString()}`;
   maybeSound(items);
 }
@@ -200,18 +209,24 @@ async function scanNow() {
   if (!ids.length) return msg("Select at least one item to watch.", true);
   saveSettings();
   const btn = document.getElementById("scanBtn");
-  btn.disabled = true; btn.textContent = "Scanning…";
+  btn.disabled = true;
+  btn.textContent = "Scanning…";
+
   try {
     const d = await call(`/api/scan?ids=${encodeURIComponent(ids.join(","))}`);
     renderScan(d);
     const errors = (d.items || []).filter(x => x.error);
     if (errors.length) {
-      msg(`Scan completed, but ${errors.length} item(s) returned Torn API errors. See the red cards below.`, true);
+      msg(`Scan finished, but ${errors.length} item(s) had an error. See the red cards below.`, true);
     } else {
       msg(`Scanned ${d.items.length} item(s).`);
     }
-  } catch(e) { msg(e.message, true); }
-  finally { btn.disabled = false; btn.textContent = "Scan Now"; }
+  } catch(e) {
+    msg(e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Scan Now";
+  }
 }
 
 function stopAuto() {
