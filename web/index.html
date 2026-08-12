@@ -46,11 +46,11 @@
     <section class="panel"><div class="section-head"><div><h2>Main Watchlist</h2><p class="muted">Your Xanax/eDVD/resale watch items appear here after a scan.</p></div></div><div id="cards" class="cards"><div class="empty">Ready to scan. Choose what you want to watch above and click Scan Now or Start Auto Scan.</div></div></section>
 
     <section class="panel">
-      <div class="section-head"><div><h2>Hidden Deals</h2><p class="muted">Continuously checks niche markets and watches Torn's global cache timestamp for genuinely new market snapshots.</p></div><button id="notifyBtn" class="secondary mini-btn" onclick="enableNotifications()">Enable Desktop Alerts</button></div>
+      <div class="section-head"><div><h2>Hidden Deals</h2><p class="muted">Adaptive niche-market scanner that learns which items actually produce useful bargains and prioritizes them around Torn's global-cache windows.</p></div><button id="notifyBtn" class="secondary mini-btn" onclick="enableNotifications()">Enable Desktop Alerts</button></div>
       <div class="toolbar"><button id="discoverBtn" onclick="discoverNow()">Scan Full Hidden Pool</button><button id="discoverAutoBtn" class="secondary" onclick="toggleDiscoverAuto()">Start Smart Hidden Scan</button><label class="check"><input id="hiddenSound" type="checkbox" checked> Alert sound</label><div class="spacer"></div><span id="discoverUpdated" class="muted">Not scanned yet</span></div>
       <div class="scan-status"><span id="discoverState" class="status-dot idle">● Hidden scan idle</span><span id="discoverNext" class="muted">Next check: —</span></div>
       <div class="progress-track"><div id="discoverProgress" class="progress-fill"></div></div>
-      <div class="research-note">Smart scan checks <strong>1 item per second</strong>, so the 17-item pool is revisited roughly every 17–20 seconds while staying comfortably below Torn's 100-request/minute limit alongside the other scanners. Torn's Item Market has an enforced 30-second global-cache delay, so TornTools tracks <strong>NEW SNAPSHOT</strong> vs <strong>REFRESH PENDING</strong> instead of incorrectly calling older active snapshots stale. <strong>NPC FLOOR</strong> remains the highest-priority signal.</div>
+      <div class="research-note">The scanner learns from <strong>new Torn cache snapshots only</strong>. Items that repeatedly hit NPC-floor or meaningful under-market prices become <strong>HOT</strong> and are revisited first as soon as another useful cache check is possible. Quiet items become WARM/COLD and use fewer calls, but a <strong>45-second anti-starvation rule</strong> keeps the entire pool covered. Torn globally caches Item Market results for a minimum 30 seconds, so checking a hot item more often cannot bypass that cache; the scheduler instead concentrates requests around the moments a new snapshot can appear.</div>
       <div class="table-wrap"><table class="research-table"><thead><tr><th>Item</th><th>Signal</th><th>Cache state</th><th>Buy</th><th>Market value</th><th>Discount</th><th>NPC floor</th><th>Potential</th><th></th></tr></thead><tbody id="discoverRows"><tr><td colspan="9" class="muted">Run Hidden Deals to check the niche-item pool.</td></tr></tbody></table></div>
     </section>
 
@@ -73,39 +73,18 @@
       <div id="eqInventoryStatus" class="research-note">Inventory has not been loaded yet.</div>
       <div class="toolbar" style="margin-bottom:12px">
         <select id="eqCategoryFilter" onchange="applyInventoryFilters()"><option value="all">All categories</option></select>
-        <select id="eqStatusFilter" onchange="applyInventoryFilters()">
-          <option value="all">Plain + RW</option>
-          <option value="plain">Plain only</option>
-          <option value="rw">RW / bonused only</option>
-          <option value="equipped">Equipped only</option>
-        </select>
-        <select id="eqSort" onchange="applyInventoryFilters()">
-          <option value="category">Sort: Category</option>
-          <option value="name">Sort: Name</option>
-          <option value="quality_desc">Sort: Quality high → low</option>
-          <option value="quality_asc">Sort: Quality low → high</option>
-        </select>
-        <input id="eqSearch" type="search" placeholder="Search equipment…" oninput="applyInventoryFilters()">
-        <div class="spacer"></div><span id="eqVisibleCount" class="muted"></span>
+        <select id="eqStatusFilter" onchange="applyInventoryFilters()"><option value="all">Plain + RW</option><option value="plain">Plain only</option><option value="rw">RW / bonused only</option><option value="equipped">Equipped only</option></select>
+        <select id="eqSort" onchange="applyInventoryFilters()"><option value="category">Sort: Category</option><option value="name">Sort: Name</option><option value="quality_desc">Sort: Quality high → low</option><option value="quality_asc">Sort: Quality low → high</option></select>
+        <input id="eqSearch" type="search" placeholder="Search equipment…" oninput="applyInventoryFilters()"><div class="spacer"></div><span id="eqVisibleCount" class="muted"></span>
       </div>
-      <div class="table-wrap">
-        <table class="research-table">
-          <thead><tr><th>Item</th><th>Category</th><th>Quality</th><th>Stats</th><th>Type</th><th>Status</th><th></th></tr></thead>
-          <tbody id="eqInventoryRows"><tr><td colspan="7" class="muted">Open this tab to load your equipment.</td></tr></tbody>
-        </table>
-      </div>
+      <div class="table-wrap"><table class="research-table"><thead><tr><th>Item</th><th>Category</th><th>Quality</th><th>Stats</th><th>Type</th><th>Status</th><th></th></tr></thead><tbody id="eqInventoryRows"><tr><td colspan="7" class="muted">Open this tab to load your equipment.</td></tr></tbody></table></div>
     </section>
 
     <section class="panel">
       <div class="section-head"><div><h2>Equipment Checker</h2><p class="muted">Check whether a plain white weapon or armor roll is worth putting on the market instead of vendoring it.</p></div></div>
-      <div class="research-note">Click <strong>Use</strong> above to fill these fields from your inventory, or enter them manually. TornTools compares only plain listings with no RW bonuses or rarity. Vendor value is still entered manually because that is the guaranteed cash-out we compare against.</div>
+      <div class="research-note">Click <strong>Use</strong> above to fill these fields from your inventory, or enter them manually. TornTools compares only plain listings with no RW bonuses or rarity. Torn's base vendor/NPC sell value and standard market value are fetched automatically when available.</div>
       <div class="equipment-grid">
-        <label>Item ID<input id="eqItemId" type="number" min="1" step="1" placeholder="e.g. Benelli item ID"></label>
-        <label>Quality %<input id="eqQuality" type="number" min="0" max="100" step="0.01" placeholder="e.g. 67.42"></label>
-        <label>Damage<input id="eqDamage" type="number" min="0" step="0.01" placeholder="weapon only"></label>
-        <label>Accuracy<input id="eqAccuracy" type="number" min="0" step="0.01" placeholder="weapon only"></label>
-        <label>Armor<input id="eqArmor" type="number" min="0" step="0.01" placeholder="armor only"></label>
-        <label>Vendor sell value<input id="eqVendor" type="number" min="0" step="1" placeholder="e.g. 3300"></label>
+        <label>Item ID<input id="eqItemId" type="number" min="1" step="1" placeholder="e.g. Benelli item ID"></label><label>Quality %<input id="eqQuality" type="number" min="0" max="100" step="0.01" placeholder="e.g. 67.42"></label><label>Damage<input id="eqDamage" type="number" min="0" step="0.01" placeholder="weapon only"></label><label>Accuracy<input id="eqAccuracy" type="number" min="0" step="0.01" placeholder="weapon only"></label><label>Armor<input id="eqArmor" type="number" min="0" step="0.01" placeholder="armor only"></label><label>Vendor sell value<input id="eqVendor" type="number" min="0" step="1" placeholder="auto-filled when available"></label>
       </div>
       <div class="toolbar"><button id="eqCheckBtn" onclick="checkEquipment()">Check Equipment</button><button class="secondary" onclick="clearEquipment()">Clear</button><div class="spacer"></div><span id="eqSelected" class="muted">No inventory item selected.</span></div>
       <div id="eqSelectedMarket" class="research-note">Torn market value: —</div>
