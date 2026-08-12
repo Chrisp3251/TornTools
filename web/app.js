@@ -6,10 +6,15 @@ let discoverTimer = null;
 let learnCountdownTimer = null;
 let discoverCountdownTimer = null;
 let metadata = [];
+let discoveryIds = [];
+let discoverBatchIndex = 0;
+let hiddenResults = new Map();
 let lastAlertKey = null;
-let lastHiddenAlertKeys = new Set();
+let seenHiddenAlertKeys = new Set();
 let lastResearchCandidates = new Set();
 
+const DISCOVER_BATCH_SIZE = 4;
+const DISCOVER_BATCH_SECONDS = 5;
 const $ = id => document.getElementById(id);
 
 async function call(path, opts={}) {
@@ -22,12 +27,13 @@ async function call(path, opts={}) {
 
 function msg(text, bad=false) {
   const e = $("msg");
+  if (!e) return;
   e.textContent = text;
   e.className = bad ? "bad" : "good";
 }
 
 function saveSettings() {
-  localStorage.setItem("torntools.v042.settings", JSON.stringify({
+  localStorage.setItem("torntools.v043.settings", JSON.stringify({
     interval: $("interval").value,
     minProfit: $("minProfit").value,
     minRoi: $("minRoi").value,
@@ -40,7 +46,7 @@ function saveSettings() {
 
 function loadSavedSettings() {
   try {
-    const raw = localStorage.getItem("torntools.v042.settings") || localStorage.getItem("torntools.v04.settings") || localStorage.getItem("torntools.v03.settings") || localStorage.getItem("torntools.v02.settings") || "{}";
+    const raw = localStorage.getItem("torntools.v043.settings") || localStorage.getItem("torntools.v042.settings") || localStorage.getItem("torntools.v04.settings") || localStorage.getItem("torntools.v03.settings") || "{}";
     const s = JSON.parse(raw);
     if (s.interval) $("interval").value = s.interval;
     if (s.minProfit !== undefined) $("minProfit").value = s.minProfit;
@@ -56,9 +62,12 @@ async function appStatus() {
   try {
     const d = await call("/api/status");
     metadata = d.items || [];
+    discoveryIds = d.discovery_ids || [];
     const e = $("status");
     e.textContent = d.key_loaded ? `● V${d.version} · key loaded` : `● V${d.version} · key needed`;
     e.className = d.key_loaded ? "pill good" : "pill warn";
+    const apiPanel = $("apiPanel");
+    if (apiPanel) apiPanel.hidden = !!d.key_loaded;
     renderWatchlist();
     await loadLiquidity();
     updateNotificationButton();
@@ -95,7 +104,6 @@ async function loadKey() {
     $("key").value = "";
     msg(r.message || "Key loaded.");
     await appStatus();
-    await scanNow();
   } catch(e) { msg(e.message, true); }
   finally { $("loadKeyBtn").disabled = false; }
 }
@@ -103,24 +111,17 @@ async function loadKey() {
 async function forgetKey() {
   try {
     await call("/api/key", {method:"DELETE"});
-    msg("Key forgotten for this session. Your local .env will load again after restart if it still contains a key.");
-    stopAuto();
-    stopLearnAuto();
-    stopDiscoverAuto();
+    stopAuto(); stopLearnAuto(); stopDiscoverAuto();
     await appStatus();
   } catch(e) { msg(e.message, true); }
 }
 
-function selectedIds() {
-  return [...document.querySelectorAll(".watch-toggle:checked")].map(x=>x.value);
-}
-
+function selectedIds() { return [...document.querySelectorAll(".watch-toggle:checked")].map(x=>x.value); }
 function isDeal(i) {
   if (i.error) return false;
   if (i.mode === "stock") return Number(i.discount_pct || 0) >= Number($("stockDiscount").value || 0);
   return Number(i.floor_clear_profit_after_fee || 0) >= Number($("minProfit").value || 0) && Number(i.net_roi_after_fee || 0) >= Number($("minRoi").value || 0);
 }
-
 function score(i) {
   if (i.error) return -999;
   if (i.mode === "stock") return Number(i.discount_pct || 0) * 10;
@@ -141,8 +142,7 @@ function beep(priority="normal") {
     osc.connect(gain); gain.connect(ctx.destination);
     osc.frequency.value = priority === "high" ? 1150 : 880;
     gain.gain.value = priority === "high" ? 0.09 : 0.05;
-    osc.start();
-    osc.stop(ctx.currentTime + (priority === "high" ? 0.28 : 0.16));
+    osc.start(); osc.stop(ctx.currentTime + (priority === "high" ? 0.28 : 0.16));
   } catch {}
 }
 
@@ -152,8 +152,7 @@ function maybeSound(items) {
   if (!deals.length) return;
   const t=deals[0], k=`${t.id}:${t.lowest}:${Math.round(score(t))}`;
   if (k===lastAlertKey) return;
-  lastAlertKey=k;
-  beep("normal");
+  lastAlertKey=k; beep("normal");
 }
 
 function renderScan(d) {
@@ -164,10 +163,7 @@ function renderScan(d) {
     const b=deals[0];
     $("bestDeal").textContent=b.name;
     $("bestDealSub").textContent=b.mode==="stock"?`${b.discount_pct.toFixed(2)}% below typical price`:`${money.format(b.floor_clear_profit_after_fee)} estimated profit · ${b.net_roi_after_fee.toFixed(2)}% ROI`;
-  } else {
-    $("bestDeal").textContent="None";
-    $("bestDealSub").textContent="Nothing meets your buy settings right now";
-  }
+  } else { $("bestDeal").textContent="None"; $("bestDealSub").textContent="Nothing meets your buy settings right now"; }
   $("lastUpdated").textContent=`Updated ${new Date(d.scanned_at*1000).toLocaleTimeString()}`;
   maybeSound(items);
 }
@@ -175,32 +171,28 @@ function renderScan(d) {
 async function scanNow() {
   const ids=selectedIds();
   if (!ids.length) return msg("Select at least one item to watch.",true);
-  saveSettings();
-  $("scanBtn").disabled=true; $("scanBtn").textContent="Scanning…";
-  try {
-    const d=await call(`/api/scan?ids=${encodeURIComponent(ids.join(","))}`);
-    renderScan(d);
-    const errors=(d.items||[]).filter(x=>x.error);
-    msg(errors.length?`Scan finished, but ${errors.length} item(s) had an error.`:`Scanned ${d.items.length} item(s).`,!!errors.length);
-  } catch(e) { msg(e.message,true); }
+  saveSettings(); $("scanBtn").disabled=true; $("scanBtn").textContent="Scanning…";
+  try { const d=await call(`/api/scan?ids=${encodeURIComponent(ids.join(","))}`); renderScan(d); }
+  catch(e) { msg(e.message,true); }
   finally { $("scanBtn").disabled=false; $("scanBtn").textContent="Scan Now"; }
 }
-
 function stopAuto(){ if(timer)clearInterval(timer);timer=null;$("autoBtn").textContent="Start Auto Scan";$("autoBtn").classList.add("secondary"); }
 function toggleAuto(){ if(timer)return stopAuto();saveSettings();scanNow();const s=Math.max(15,Number($("interval").value||30));timer=setInterval(scanNow,s*1000);$("autoBtn").textContent=`Stop Auto Scan (${s}s)`;$("autoBtn").classList.remove("secondary"); }
 
+function isResearchCandidate(x) { return Number(x.observations||0)>=8 && ["Active","Very active"].includes(x.label) && Number(x.gap_events||0)>=3 && Number(x.largest_gap_pct||0)>=3; }
+function researchDiscount(x) {
+  const low=Number(x.lowest||0), avg=Number(x.average_price||0);
+  return low>0 && avg>0 ? ((avg-low)/avg*100) : 0;
+}
 function renderLiquidity(items) {
-  if (!items.length) { $("liquidityRows").innerHTML=`<tr><td colspan="7" class="muted">Run a few samples to start learning.</td></tr>`; return; }
+  if (!items.length) { $("liquidityRows").innerHTML=`<tr><td colspan="10" class="muted">Run a few samples to start learning.</td></tr>`; return; }
   $("liquidityRows").innerHTML=items.map(x=>{
-    const candidate=isResearchCandidate(x);
-    return `<tr class="${candidate?"research-candidate":""}"><td><strong>${x.name}</strong>${candidate?`<br><small class="candidate-label">PROMOTION CANDIDATE</small>`:""}</td><td>${x.label||"Learning"}</td><td>${Number(x.score||0).toFixed(0)}</td><td>${x.observations||0}</td><td>${x.gap_events||0}</td><td>${Number(x.largest_gap_pct||0).toFixed(2)}%</td><td><button class="mini-btn" onclick="window.open('${x.market_url}','_blank','noopener')">Open</button></td></tr>`;
+    if (x.error) return `<tr><td><strong>${x.name}</strong></td><td colspan="8" class="bad">${x.error}</td><td></td></tr>`;
+    const candidate=isResearchCandidate(x), disc=researchDiscount(x);
+    const signal=candidate?"PROMOTION CANDIDATE":Number(x.observations||0)<4?"LEARNING":"WATCH";
+    return `<tr class="${candidate?"research-candidate":""}"><td><strong>${x.name}</strong></td><td><strong>${signal}</strong></td><td>${x.lowest?money.format(x.lowest):"—"}</td><td>${x.average_price?money.format(x.average_price):"—"}</td><td>${disc.toFixed(1)}%</td><td>${x.label||"Learning"} · ${Number(x.score||0).toFixed(0)}</td><td>${x.observations||0}</td><td>${x.gap_events||0}</td><td>${Number(x.largest_gap_pct||0).toFixed(2)}%</td><td><button class="mini-btn" onclick="window.open('${x.market_url}','_blank','noopener')">Open</button></td></tr>`;
   }).join("");
 }
-
-function isResearchCandidate(x) {
-  return Number(x.observations||0) >= 8 && ["Active","Very active"].includes(x.label) && Number(x.gap_events||0) >= 3 && Number(x.largest_gap_pct||0) >= 3;
-}
-
 async function loadLiquidity(){ try{const d=await call("/api/liquidity");renderLiquidity(d.items||[])}catch{} }
 
 function notify(title, body, url=null, priority="normal") {
@@ -209,44 +201,34 @@ function notify(title, body, url=null, priority="normal") {
   try {
     const n = new Notification(title, {body, tag:`torntools-${title}`, renotify:true});
     if (url) n.onclick = () => { window.focus(); window.open(url,"_blank","noopener"); n.close(); };
-    setTimeout(()=>n.close(), 15000);
+    setTimeout(()=>n.close(),15000);
   } catch {}
 }
-
 function updateNotificationButton() {
-  const btn=$("notifyBtn");
-  if (!btn) return;
+  const btn=$("notifyBtn"); if(!btn)return;
   if (!("Notification" in window)) { btn.textContent="Desktop Alerts Unsupported"; btn.disabled=true; return; }
   if (Notification.permission === "granted") { btn.textContent="Desktop Alerts Enabled"; btn.classList.add("enabled-alerts"); }
   else if (Notification.permission === "denied") { btn.textContent="Desktop Alerts Blocked"; btn.disabled=true; }
-  else { btn.textContent="Enable Desktop Alerts"; }
+  else btn.textContent="Enable Desktop Alerts";
 }
-
 async function enableNotifications() {
-  if (!("Notification" in window)) return msg("This browser does not support desktop notifications.", true);
-  try {
-    const result=await Notification.requestPermission();
-    updateNotificationButton();
-    if (result==="granted") msg("Desktop alerts enabled. Hidden Deals can now notify you even when this tab is in the background.");
-    else msg("Desktop alerts were not enabled. You can still use the sound and highlighted rows.", true);
-  } catch(e) { msg(`Could not enable notifications: ${e.message}`, true); }
+  if (!("Notification" in window)) return;
+  try { await Notification.requestPermission(); updateNotificationButton(); } catch {}
 }
 
 function renderDiscovery(items) {
-  if(!items.length){$("discoverRows").innerHTML=`<tr><td colspan="8" class="muted">No discovery results.</td></tr>`;return;}
-  $("discoverRows").innerHTML=items.map(x=>{
+  if(!items.length){$("discoverRows").innerHTML=`<tr><td colspan="8" class="muted">No discovery results yet.</td></tr>`;return;}
+  const sorted=[...items].sort((a,b)=>(b.deal_score||-1)-(a.deal_score||-1));
+  $("discoverRows").innerHTML=sorted.map(x=>{
     if(x.error)return`<tr><td><strong>${x.name}</strong></td><td colspan="6" class="bad">${x.error}</td><td></td></tr>`;
-    const high=x.kind==="NPC FLOOR";
-    const normal=x.kind==="UNDER MARKET" && Number(x.discount_pct||0)>=15;
-    const mild=x.kind==="UNDER MARKET" && !normal;
+    const high=x.kind==="NPC FLOOR", normal=x.kind==="UNDER MARKET"&&Number(x.discount_pct||0)>=15, mild=x.kind==="UNDER MARKET"&&!normal;
     const rowClass=high?"priority-hit":normal?"research-hit":mild?"mild-hit":"";
     const potential=x.floor_profit>0?`${money.format(x.floor_profit)} guaranteed spread`:(x.discount_pct>=8?`${x.discount_pct.toFixed(1)}% under market`:"—");
-    return`<tr class="${rowClass}"><td><strong>${x.name}</strong><br><small class="muted">${x.activity||"Learning"} · ${x.samples||0} samples</small></td><td><strong>${x.kind}</strong></td><td>${money.format(x.lowest||0)}${x.qty_floor>1?` × ${x.qty_floor}`:""}</td><td>${x.market_value?money.format(x.market_value):"—"}</td><td>${Number(x.discount_pct||0).toFixed(1)}%</td><td>${x.hard_floor?money.format(x.hard_floor):"—"}</td><td>${potential}</td><td><button class="mini-btn" onclick="window.open('${x.market_url}','_blank','noopener')">Open</button></td></tr>`;
+    return `<tr class="${rowClass}"><td><strong>${x.name}</strong><br><small class="muted">${x.activity||"Learning"} · ${x.samples||0} samples</small></td><td><strong>${x.kind}</strong></td><td>${money.format(x.lowest||0)}${x.qty_floor>1?` × ${x.qty_floor}`:""}</td><td>${x.market_value?money.format(x.market_value):"—"}</td><td>${Number(x.discount_pct||0).toFixed(1)}%</td><td>${x.hard_floor?money.format(x.hard_floor):"—"}</td><td>${potential}</td><td><button class="mini-btn" onclick="window.open('${x.market_url}','_blank','noopener')">Open</button></td></tr>`;
   }).join("");
 }
 
 function processHiddenAlerts(items) {
-  const currentKeys=new Set();
   for (const x of items) {
     if (x.error) continue;
     let priority=null;
@@ -254,14 +236,11 @@ function processHiddenAlerts(items) {
     else if (x.kind==="UNDER MARKET" && Number(x.discount_pct||0)>=15) priority="normal";
     if (!priority) continue;
     const key=`${x.id}:${x.lowest}:${x.qty_floor}:${x.kind}`;
-    currentKeys.add(key);
-    if (lastHiddenAlertKeys.has(key)) continue;
-    const body=x.kind==="NPC FLOOR"
-      ? `${money.format(x.lowest)} buy · ${money.format(x.hard_floor)} NPC floor · ${money.format(x.floor_profit||0)} potential spread`
-      : `${money.format(x.lowest)} buy · ${Number(x.discount_pct||0).toFixed(1)}% below Torn market value`;
-    notify(`${priority==="high"?"HIGH PRIORITY · ":""}${x.name}`, body, x.market_url, priority);
+    if (seenHiddenAlertKeys.has(key)) continue;
+    seenHiddenAlertKeys.add(key);
+    const body=x.kind==="NPC FLOOR" ? `${money.format(x.lowest)} buy · ${money.format(x.hard_floor)} NPC floor · ${money.format(x.floor_profit||0)} potential spread` : `${money.format(x.lowest)} buy · ${Number(x.discount_pct||0).toFixed(1)}% below Torn market value`;
+    notify(`${priority==="high"?"HIGH PRIORITY · ":""}${x.name}`,body,x.market_url,priority);
   }
-  lastHiddenAlertKeys=currentKeys;
 }
 
 function processResearchCandidates(items) {
@@ -271,82 +250,67 @@ function processResearchCandidates(items) {
     current.add(String(x.id));
     if (lastResearchCandidates.has(String(x.id))) continue;
     if ("Notification" in window && Notification.permission==="granted") {
-      try {
-        const n=new Notification(`Research candidate · ${x.name}`, {body:`${x.label} · ${x.observations} samples · ${x.gap_events} gap events · largest gap ${Number(x.largest_gap_pct||0).toFixed(1)}%`, tag:`research-${x.id}`});
-        n.onclick=()=>{window.focus();window.open(x.market_url,"_blank","noopener");n.close();};
-      } catch {}
+      try { const n=new Notification(`Research candidate · ${x.name}`,{body:`${x.label} · ${x.observations} samples · ${x.gap_events} gap events · largest gap ${Number(x.largest_gap_pct||0).toFixed(1)}%`}); n.onclick=()=>window.open(x.market_url,"_blank","noopener"); } catch {}
     }
   }
   lastResearchCandidates=current;
 }
 
 function startCountdown(kind, seconds) {
-  const isLearn=kind==="learn";
-  const state=$(isLearn?"learnState":"discoverState");
-  const next=$(isLearn?"learnNext":"discoverNext");
-  const progress=$(isLearn?"learnProgress":"discoverProgress");
-  if (isLearn && learnCountdownTimer) clearInterval(learnCountdownTimer);
-  if (!isLearn && discoverCountdownTimer) clearInterval(discoverCountdownTimer);
+  const isLearn=kind==="learn", state=$(isLearn?"learnState":"discoverState"), next=$(isLearn?"learnNext":"discoverNext"), progress=$(isLearn?"learnProgress":"discoverProgress");
+  if(isLearn&&learnCountdownTimer)clearInterval(learnCountdownTimer); if(!isLearn&&discoverCountdownTimer)clearInterval(discoverCountdownTimer);
   let remaining=seconds;
-  state.textContent=isLearn?"● Quiet Learning active":"● Hidden auto scan active";
+  state.textContent=isLearn?"● Quiet Learning active":`● Fast Hidden scan active · ${DISCOVER_BATCH_SIZE} items/batch`;
   state.className="status-dot live";
-  const tick=()=>{
-    next.textContent=`Next ${isLearn?"sample":"scan"}: ${Math.floor(remaining/60)}m ${String(remaining%60).padStart(2,"0")}s`;
-    progress.style.width=`${Math.max(0,Math.min(100,(1-remaining/seconds)*100))}%`;
-    if (remaining<=0) remaining=seconds; else remaining--;
-  };
-  tick();
-  const handle=setInterval(tick,1000);
-  if (isLearn) learnCountdownTimer=handle; else discoverCountdownTimer=handle;
+  const tick=()=>{next.textContent=`Next ${isLearn?"sample":"batch"}: ${Math.floor(remaining/60)}m ${String(remaining%60).padStart(2,"0")}s`;progress.style.width=`${Math.max(0,Math.min(100,(1-remaining/seconds)*100))}%`;if(remaining<=0)remaining=seconds;else remaining--;};
+  tick(); const h=setInterval(tick,1000); if(isLearn)learnCountdownTimer=h;else discoverCountdownTimer=h;
 }
-
 function stopCountdown(kind) {
-  const isLearn=kind==="learn";
-  const timerHandle=isLearn?learnCountdownTimer:discoverCountdownTimer;
-  if (timerHandle) clearInterval(timerHandle);
-  if (isLearn) learnCountdownTimer=null; else discoverCountdownTimer=null;
+  const isLearn=kind==="learn", h=isLearn?learnCountdownTimer:discoverCountdownTimer;
+  if(h)clearInterval(h); if(isLearn)learnCountdownTimer=null;else discoverCountdownTimer=null;
   const state=$(isLearn?"learnState":"discoverState"), next=$(isLearn?"learnNext":"discoverNext"), progress=$(isLearn?"learnProgress":"discoverProgress");
-  state.textContent=isLearn?"● Learning idle":"● Hidden scan idle";
-  state.className="status-dot idle";
-  next.textContent=`Next ${isLearn?"sample":"scan"}: —`;
-  progress.style.width="0%";
+  state.textContent=isLearn?"● Learning idle":"● Hidden scan idle"; state.className="status-dot idle"; next.textContent=`Next ${isLearn?"sample":"batch"}: —`; progress.style.width="0%";
 }
 
 async function learnNow() {
   $("learnBtn").disabled=true; $("learnBtn").textContent="Sampling…";
-  try {
-    const d=await call("/api/learn",{method:"POST"});
-    renderLiquidity(d.items||[]);
-    processResearchCandidates(d.items||[]);
-    $("learnUpdated").textContent=`Last sample ${new Date(d.learned_at*1000).toLocaleTimeString()}`;
-    const errors=(d.items||[]).filter(x=>x.error);
-    if(errors.length)msg(`Research sample completed with ${errors.length} item error(s).`,true);
-    if (learnTimer) startCountdown("learn",120);
-  } catch(e){msg(e.message,true)}
-  finally{$("learnBtn").disabled=false;$("learnBtn").textContent="Sample Research Markets"}
+  try { const d=await call("/api/learn",{method:"POST"}); renderLiquidity(d.items||[]); processResearchCandidates(d.items||[]); $("learnUpdated").textContent=`Last sample ${new Date(d.learned_at*1000).toLocaleTimeString()}`; if(learnTimer)startCountdown("learn",120); }
+  catch(e){msg(e.message,true)} finally{$("learnBtn").disabled=false;$("learnBtn").textContent="Sample Research Markets"}
 }
-
 function stopLearnAuto(){if(learnTimer)clearInterval(learnTimer);learnTimer=null;$("learnAutoBtn").textContent="Start Quiet Learning";$("learnAutoBtn").classList.add("secondary");stopCountdown("learn")}
 function toggleLearnAuto(){if(learnTimer)return stopLearnAuto();learnNow();learnTimer=setInterval(learnNow,120000);$("learnAutoBtn").textContent="Stop Quiet Learning (2m)";$("learnAutoBtn").classList.remove("secondary");startCountdown("learn",120)}
 
-async function discoverNow() {
-  $("discoverBtn").disabled=true; $("discoverBtn").textContent="Scanning…";
-  try {
-    const d=await call("/api/discover",{method:"POST"});
-    renderDiscovery(d.items||[]);
-    processHiddenAlerts(d.items||[]);
-    $("discoverUpdated").textContent=`Last scan ${new Date(d.scanned_at*1000).toLocaleTimeString()}`;
-    const high=(d.items||[]).filter(x=>x.kind==="NPC FLOOR").length;
-    const normal=(d.items||[]).filter(x=>x.kind==="UNDER MARKET"&&Number(x.discount_pct||0)>=15).length;
-    const mild=(d.items||[]).filter(x=>x.kind==="UNDER MARKET"&&Number(x.discount_pct||0)<15).length;
-    msg(high||normal||mild?`Hidden Deals: ${high} high-priority, ${normal} alert-worthy, ${mild} watch-only hit(s).`:`Hidden Deals checked the niche pool. No hits right now.`);
-    if (discoverTimer) startCountdown("discover",120);
-  } catch(e){msg(e.message,true)}
-  finally{$("discoverBtn").disabled=false;$("discoverBtn").textContent="Scan Hidden Deals"}
+function nextDiscoveryBatch() {
+  if (!discoveryIds.length) return [];
+  const batch=[];
+  for(let n=0;n<Math.min(DISCOVER_BATCH_SIZE,discoveryIds.length);n++) batch.push(discoveryIds[(discoverBatchIndex+n)%discoveryIds.length]);
+  discoverBatchIndex=(discoverBatchIndex+DISCOVER_BATCH_SIZE)%discoveryIds.length;
+  return batch;
 }
 
-function stopDiscoverAuto(){if(discoverTimer)clearInterval(discoverTimer);discoverTimer=null;$("discoverAutoBtn").textContent="Auto Scan Hidden Deals";$("discoverAutoBtn").classList.add("secondary");stopCountdown("discover")}
-function toggleDiscoverAuto(){if(discoverTimer)return stopDiscoverAuto();discoverNow();discoverTimer=setInterval(discoverNow,120000);$("discoverAutoBtn").textContent="Stop Hidden Auto Scan (2m)";$("discoverAutoBtn").classList.remove("secondary");startCountdown("discover",120)}
+async function discoverNow(batchIds=null) {
+  const isBatch=Array.isArray(batchIds) && batchIds.length>0;
+  if(!isBatch){$("discoverBtn").disabled=true;$("discoverBtn").textContent="Scanning full pool…";}
+  try {
+    const suffix=isBatch?`?ids=${encodeURIComponent(batchIds.join(","))}`:"";
+    const d=await call(`/api/discover${suffix}`,{method:"POST"});
+    for(const x of d.items||[]) hiddenResults.set(Number(x.id),x);
+    renderDiscovery([...hiddenResults.values()]);
+    processHiddenAlerts(d.items||[]);
+    $("discoverUpdated").textContent=`Last batch ${new Date(d.scanned_at*1000).toLocaleTimeString()} · ${hiddenResults.size}/${d.pool_count||discoveryIds.length} items seen`;
+    if(discoverTimer)startCountdown("discover",DISCOVER_BATCH_SECONDS);
+  } catch(e){msg(e.message,true)}
+  finally{if(!isBatch){$("discoverBtn").disabled=false;$("discoverBtn").textContent="Scan Full Hidden Pool";}}
+}
+
+async function runDiscoveryBatch(){ const batch=nextDiscoveryBatch(); if(batch.length) await discoverNow(batch); }
+function stopDiscoverAuto(){if(discoverTimer)clearInterval(discoverTimer);discoverTimer=null;$("discoverAutoBtn").textContent="Start Fast Hidden Scan";$("discoverAutoBtn").classList.add("secondary");stopCountdown("discover")}
+function toggleDiscoverAuto(){
+  if(discoverTimer)return stopDiscoverAuto();
+  discoverBatchIndex=0; runDiscoveryBatch();
+  discoverTimer=setInterval(runDiscoveryBatch,DISCOVER_BATCH_SECONDS*1000);
+  $("discoverAutoBtn").textContent="Stop Fast Hidden Scan (5s batches)";$("discoverAutoBtn").classList.remove("secondary");startCountdown("discover",DISCOVER_BATCH_SECONDS);
+}
 
 ["interval","minProfit","minRoi","stockDiscount","sound","hiddenSound"].forEach(id=>document.addEventListener("change",e=>{if(e.target.id===id)saveSettings()}));
 $("key").addEventListener("keydown",e=>{if(e.key==="Enter")loadKey()});
