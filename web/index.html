@@ -18,12 +18,7 @@
   </header>
 
   <section class="panel">
-    <div class="section-head">
-      <div>
-        <h2>API Key</h2>
-        <p class="muted">Your Torn API key stays in memory while the app is running.</p>
-      </div>
-    </div>
+    <div class="section-head"><div><h2>API Key</h2><p class="muted">Your Torn API key stays in memory while the app is running.</p></div></div>
     <div class="row">
       <input id="key" type="password" autocomplete="off" placeholder="Paste your limited Torn API key">
       <button id="loadKeyBtn" onclick="loadKey()">Load Key</button>
@@ -33,77 +28,55 @@
   </section>
 
   <section class="panel controls">
-    <div class="section-head">
-      <div>
-        <h2>Scanner</h2>
-        <p class="muted">Personal-use items alert when they are cheap. Resale items alert when the estimated profit is worth it.</p>
-      </div>
-    </div>
-
+    <div class="section-head"><div><h2>Scanner</h2><p class="muted">Personal-use items alert when cheap. Resale items alert when the estimated profit is worth it.</p></div></div>
     <div class="control-grid">
-      <label>Check every
-        <select id="interval">
-          <option value="15">15 sec</option>
-          <option value="30" selected>30 sec</option>
-          <option value="60">60 sec</option>
-          <option value="120">2 min</option>
-        </select>
-      </label>
-      <label>Minimum profit
-        <input id="minProfit" type="number" min="0" step="10000" value="125000">
-      </label>
-      <label>Minimum ROI
-        <input id="minRoi" type="number" min="0" step="0.5" value="6">
-      </label>
-      <label>Personal-use discount
-        <input id="stockDiscount" type="number" min="0" step="0.5" value="2.5">
-      </label>
+      <label>Check every<select id="interval"><option value="15">15 sec</option><option value="30" selected>30 sec</option><option value="60">60 sec</option><option value="120">2 min</option></select></label>
+      <label>Minimum profit<input id="minProfit" type="number" min="0" step="10000" value="125000"></label>
+      <label>Minimum ROI<input id="minRoi" type="number" min="0" step="0.5" value="6"></label>
+      <label>Personal-use discount<input id="stockDiscount" type="number" min="0" step="0.5" value="2.5"></label>
     </div>
-
     <div class="watchlist" id="watchlist"></div>
-
     <div class="toolbar">
       <button id="scanBtn" onclick="scanNow()">Scan Now</button>
       <button id="autoBtn" class="secondary" onclick="toggleAuto()">Start Auto Scan</button>
       <label class="check"><input id="sound" type="checkbox"> Sound for good buys</label>
-      <div class="spacer"></div>
-      <span id="lastUpdated" class="muted">Not scanned yet</span>
+      <div class="spacer"></div><span id="lastUpdated" class="muted">Not scanned yet</span>
     </div>
   </section>
 
   <section class="summary-grid">
-    <article class="summary-card">
-      <span>Watching</span>
-      <strong id="watchingCount">0</strong>
-      <small>items</small>
-    </article>
-    <article class="summary-card">
-      <span>Good buys</span>
-      <strong id="dealCount">0</strong>
-      <small>meeting your settings</small>
-    </article>
-    <article class="summary-card">
-      <span>Best buy right now</span>
-      <strong id="bestDeal">—</strong>
-      <small id="bestDealSub">Nothing scanned yet</small>
-    </article>
+    <article class="summary-card"><span>Watching</span><strong id="watchingCount">0</strong><small>items</small></article>
+    <article class="summary-card"><span>Good buys</span><strong id="dealCount">0</strong><small>meeting your settings</small></article>
+    <article class="summary-card"><span>Best buy right now</span><strong id="bestDeal">—</strong><small id="bestDealSub">Nothing scanned yet</small></article>
+  </section>
+
+  <section class="panel">
+    <div class="section-head"><div><h2>Current Market</h2><p class="muted">Green means it meets your buy settings. Gray means keep watching.</p></div></div>
+    <div id="cards" class="cards"><div class="empty">Load your API key, choose what to watch, then scan.</div></div>
   </section>
 
   <section class="panel">
     <div class="section-head">
       <div>
-        <h2>Current Market</h2>
-        <p class="muted">Green means it meets your buy settings. Gray means keep watching.</p>
+        <h2>Market Research</h2>
+        <p class="muted">Quietly measures how often markets change. This is market churn, not confirmed sales volume.</p>
       </div>
     </div>
-    <div id="cards" class="cards">
-      <div class="empty">Load your API key, choose what to watch, then scan.</div>
+    <div class="toolbar">
+      <button id="learnBtn" onclick="learnNow()">Sample Research Markets</button>
+      <button id="learnAutoBtn" class="secondary" onclick="toggleLearnAuto()">Start Quiet Learning</button>
+      <div class="spacer"></div><span id="learnUpdated" class="muted">No research data yet</span>
+    </div>
+    <div class="research-note">Quiet Learning checks the research pool every 2 minutes, saves snapshots locally, and never creates buy alerts.</div>
+    <div class="table-wrap">
+      <table class="research-table">
+        <thead><tr><th>Item</th><th>Activity</th><th>Score</th><th>Samples</th><th>Price-gap events</th><th>Largest gap</th><th></th></tr></thead>
+        <tbody id="liquidityRows"><tr><td colspan="7" class="muted">Run a few samples to start learning.</td></tr></tbody>
+      </table>
     </div>
   </section>
 
-  <section class="notice">
-    <strong>Read-only:</strong> TornTools finds opportunities and opens the market for you. It never buys or sells automatically.
-  </section>
+  <section class="notice"><strong>Read-only:</strong> TornTools finds opportunities and opens the market for you. It never buys or sells automatically.</section>
 </main>
 <script src="/static/app.js"></script>
 </body>
