@@ -9,21 +9,13 @@
 <body>
 <main>
   <header class="topbar">
-    <div>
-      <div class="eyebrow">LOCAL MARKET TOOL</div>
-      <h1>TornTools Market Scanner</h1>
-      <p>Find good buys for personal use, resale, and hidden market mistakes.</p>
-    </div>
+    <div><div class="eyebrow">LOCAL MARKET TOOL</div><h1>TornTools Market Scanner</h1><p>Find good buys for personal use, resale, and hidden market mistakes.</p></div>
     <span id="status" class="pill">Checking…</span>
   </header>
 
   <section id="apiPanel" class="panel" hidden>
     <div class="section-head"><div><h2>API Key</h2><p class="muted">A key is only needed here if TornTools did not find one in your local .env file.</p></div></div>
-    <div class="row">
-      <input id="key" type="password" autocomplete="off" placeholder="Paste your limited Torn API key">
-      <button id="loadKeyBtn" onclick="loadKey()">Load Key</button>
-      <button class="secondary" onclick="forgetKey()">Forget</button>
-    </div>
+    <div class="row"><input id="key" type="password" autocomplete="off" placeholder="Paste your limited Torn API key"><button id="loadKeyBtn" onclick="loadKey()">Load Key</button><button class="secondary" onclick="forgetKey()">Forget</button></div>
     <div id="msg"></div>
   </section>
 
@@ -36,12 +28,7 @@
       <label>Personal-use discount<input id="stockDiscount" type="number" min="0" step="0.5" value="2.5"></label>
     </div>
     <div class="watchlist" id="watchlist"></div>
-    <div class="toolbar">
-      <button id="scanBtn" onclick="scanNow()">Scan Now</button>
-      <button id="autoBtn" class="secondary" onclick="toggleAuto()">Start Auto Scan</button>
-      <label class="check"><input id="sound" type="checkbox"> Sound for good buys</label>
-      <div class="spacer"></div><span id="lastUpdated" class="muted">Not scanned yet</span>
-    </div>
+    <div class="toolbar"><button id="scanBtn" onclick="scanNow()">Scan Now</button><button id="autoBtn" class="secondary" onclick="toggleAuto()">Start Auto Scan</button><label class="check"><input id="sound" type="checkbox"> Sound for good buys</label><div class="spacer"></div><span id="lastUpdated" class="muted">Not scanned yet</span></div>
   </section>
 
   <section class="summary-grid">
@@ -50,59 +37,27 @@
     <article class="summary-card"><span>Best buy right now</span><strong id="bestDeal">—</strong><small id="bestDealSub">Nothing scanned yet</small></article>
   </section>
 
-  <section class="panel">
-    <div class="section-head"><div><h2>Main Watchlist</h2><p class="muted">Your Xanax/eDVD/resale watch items appear here after a scan.</p></div></div>
-    <div id="cards" class="cards"><div class="empty">Ready to scan. Choose what you want to watch above and click Scan Now or Start Auto Scan.</div></div>
-  </section>
+  <section class="panel"><div class="section-head"><div><h2>Main Watchlist</h2><p class="muted">Your Xanax/eDVD/resale watch items appear here after a scan.</p></div></div><div id="cards" class="cards"><div class="empty">Ready to scan. Choose what you want to watch above and click Scan Now or Start Auto Scan.</div></div></section>
 
   <section class="panel">
-    <div class="section-head">
-      <div><h2>Hidden Deals</h2><p class="muted">Rapidly rotates through less-obvious items looking for mispriced listings and known NPC-floor opportunities.</p></div>
-      <button id="notifyBtn" class="secondary mini-btn" onclick="enableNotifications()">Enable Desktop Alerts</button>
-    </div>
-    <div class="toolbar">
-      <button id="discoverBtn" onclick="discoverNow()">Scan Full Hidden Pool</button>
-      <button id="discoverAutoBtn" class="secondary" onclick="toggleDiscoverAuto()">Start Fast Hidden Scan</button>
-      <label class="check"><input id="hiddenSound" type="checkbox" checked> Alert sound</label>
-      <div class="spacer"></div><span id="discoverUpdated" class="muted">Not scanned yet</span>
-    </div>
-    <div class="scan-status">
-      <span id="discoverState" class="status-dot idle">● Hidden scan idle</span>
-      <span id="discoverNext" class="muted">Next batch: —</span>
-    </div>
+    <div class="section-head"><div><h2>Hidden Deals</h2><p class="muted">Fast rotating scan of less-obvious markets, with Torn's global-cache age shown so old opportunities are obvious.</p></div><button id="notifyBtn" class="secondary mini-btn" onclick="enableNotifications()">Enable Desktop Alerts</button></div>
+    <div class="toolbar"><button id="discoverBtn" onclick="discoverNow()">Scan Full Hidden Pool</button><button id="discoverAutoBtn" class="secondary" onclick="toggleDiscoverAuto()">Start Cache-Aware Hidden Scan</button><label class="check"><input id="hiddenSound" type="checkbox" checked> Alert sound</label><div class="spacer"></div><span id="discoverUpdated" class="muted">Not scanned yet</span></div>
+    <div class="scan-status"><span id="discoverState" class="status-dot idle">● Hidden scan idle</span><span id="discoverNext" class="muted">Next batch: —</span></div>
     <div class="progress-track"><div id="discoverProgress" class="progress-fill"></div></div>
-    <div class="research-note"><strong>Fast mode:</strong> checks 4 items every 5 seconds, so the whole hidden pool refreshes about every 20–25 seconds without hammering the API. Alert rules: <strong>NPC FLOOR</strong> = high priority; <strong>15%+ under market</strong> = normal alert; 8–15% is highlighted only.</div>
-    <div class="table-wrap">
-      <table class="research-table">
-        <thead><tr><th>Item</th><th>Signal</th><th>Buy</th><th>Market value</th><th>Discount</th><th>NPC floor</th><th>Potential</th><th></th></tr></thead>
-        <tbody id="discoverRows"><tr><td colspan="8" class="muted">Run Hidden Deals to check the niche-item pool.</td></tr></tbody>
-      </table>
-    </div>
+    <div class="research-note">3 items are checked every 5 seconds, so the full pool cycles in about 30 seconds. <strong>NPC FLOOR</strong> is high priority; <strong>15%+ under market</strong> is a normal alert. Freshness comes from Torn's own global market-cache timestamp.</div>
+    <div class="table-wrap"><table class="research-table"><thead><tr><th>Item</th><th>Signal</th><th>Freshness</th><th>Buy</th><th>Market value</th><th>Discount</th><th>NPC floor</th><th>Potential</th><th></th></tr></thead><tbody id="discoverRows"><tr><td colspan="9" class="muted">Run Hidden Deals to check the niche-item pool.</td></tr></tbody></table></div>
   </section>
 
   <section class="panel">
-    <div class="section-head"><div><h2>Market Research</h2><p class="muted">Learns which markets actually move and repeatedly produce usable price gaps.</p></div></div>
-    <div class="toolbar">
-      <button id="learnBtn" onclick="learnNow()">Sample Research Markets</button>
-      <button id="learnAutoBtn" class="secondary" onclick="toggleLearnAuto()">Start Quiet Learning</button>
-      <div class="spacer"></div><span id="learnUpdated" class="muted">No research data yet</span>
-    </div>
-    <div class="scan-status">
-      <span id="learnState" class="status-dot idle">● Learning idle</span>
-      <span id="learnNext" class="muted">Next sample: —</span>
-    </div>
+    <div class="section-head"><div><h2>Market Research</h2><p class="muted">Quietly measures less-obvious markets and promotes the ones that repeatedly show useful movement.</p></div></div>
+    <div class="toolbar"><button id="learnBtn" onclick="learnNow()">Sample Research Markets</button><button id="learnAutoBtn" class="secondary" onclick="toggleLearnAuto()">Start Quiet Learning</button><div class="spacer"></div><span id="learnUpdated" class="muted">No research data yet</span></div>
+    <div class="scan-status"><span id="learnState" class="status-dot idle">● Learning idle</span><span id="learnNext" class="muted">Next sample: —</span></div>
     <div class="progress-track"><div id="learnProgress" class="progress-fill"></div></div>
-    <div class="research-note">Same idea as Hidden Deals, but slower and evidence-based. A <strong>PROMOTION CANDIDATE</strong> has enough samples, active churn, and repeated price gaps to deserve moving into faster scanning.</div>
-    <div class="table-wrap">
-      <table class="research-table">
-        <thead><tr><th>Item</th><th>Signal</th><th>Buy</th><th>Market value</th><th>Discount</th><th>Activity</th><th>Samples</th><th>Gap events</th><th>Largest gap</th><th></th></tr></thead>
-        <tbody id="liquidityRows"><tr><td colspan="10" class="muted">Run a few samples to start learning.</td></tr></tbody>
-      </table>
-    </div>
+    <div class="research-note">A promotion candidate needs enough samples, strong activity, and repeated price-gap behavior. This is market churn, not confirmed sales volume.</div>
+    <div class="table-wrap"><table class="research-table"><thead><tr><th>Item</th><th>Signal</th><th>Buy</th><th>Market value</th><th>Discount</th><th>Activity</th><th>Samples</th><th>Gap events</th><th>Largest gap</th><th></th></tr></thead><tbody id="liquidityRows"><tr><td colspan="10" class="muted">Run a few samples to start learning.</td></tr></tbody></table></div>
   </section>
 
   <section class="notice"><strong>Read-only:</strong> TornTools finds opportunities and opens the market for you. It never buys or sells automatically.</section>
 </main>
 <script src="/static/app.js"></script>
-</body>
-</html>
+</body></html>
