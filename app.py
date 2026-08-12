@@ -32,7 +32,7 @@ def load_local_env_key():
         return None
     return None
 
-app=FastAPI(title="TornTools Local Scanner",version="0.4.1"); app.mount("/static",StaticFiles(directory=WEB),name="static")
+app=FastAPI(title="TornTools Local Scanner",version="0.4.3"); app.mount("/static",StaticFiles(directory=WEB),name="static")
 _api_key:str|None=load_local_env_key(); _last_scan:dict[str,Any]|None=None
 class KeyPayload(BaseModel): api_key:str
 
@@ -109,7 +109,7 @@ def discovery_result(i,meta,listings,avg):
 @app.get("/")
 async def home():return FileResponse(WEB/"index.html")
 @app.get("/api/status")
-async def status():return {"ok":True,"version":"0.4.1","key_loaded":bool(_api_key),"key_source":"local .env / environment" if _api_key else None,"market_fee_pct":5,"items":[{"id":i,**m} for i,m in ITEMS.items()],"discovery_count":len(DISCOVERY_ITEMS)}
+async def status():return {"ok":True,"version":"0.4.3","key_loaded":bool(_api_key),"key_source":"local .env / environment" if _api_key else None,"market_fee_pct":5,"items":[{"id":i,**m} for i,m in ITEMS.items()],"discovery_count":len(DISCOVERY_ITEMS),"discovery_ids":list(DISCOVERY_ITEMS)}
 @app.post("/api/key")
 async def set_key(p:KeyPayload):
     global _api_key
@@ -146,16 +146,31 @@ async def learn_markets():
     out.sort(key=lambda x:(x.get("score",-1),x.get("gap_events",-1)),reverse=True);return {"ok":True,"learned_at":time.time(),"items":out}
 @app.get("/api/liquidity")
 async def get_liquidity():
-    out=[{"id":i,"name":n,"market_url":market_url(i),**liquidity_stats(i)} for i,n in LEARN_ITEMS.items()];out.sort(key=lambda x:x.get("score",-1),reverse=True);return {"ok":True,"items":out}
-@app.post("/api/discover")
-async def discover_hidden_deals():
-    ids=list(DISCOVERY_ITEMS)
-    async with httpx.AsyncClient(timeout=25) as client: results=await asyncio.gather(*(fetch_market(client,i,60) for i in ids),return_exceptions=True)
     out=[]
-    for i,r in zip(ids,results):
+    with sqlite3.connect(DB_PATH) as c:
+        for i,n in LEARN_ITEMS.items():
+            last=c.execute("SELECT lowest,average_price FROM market_snapshots WHERE item_id=? ORDER BY ts DESC LIMIT 1",(i,)).fetchone()
+            low=last[0] if last else None; avg=last[1] if last else None
+            out.append({"id":i,"name":n,"lowest":low,"average_price":avg,"market_url":market_url(i),**liquidity_stats(i)})
+    out.sort(key=lambda x:x.get("score",-1),reverse=True);return {"ok":True,"items":out}
+@app.post("/api/discover")
+async def discover_hidden_deals(ids:str=Query(default="")):
+    if ids.strip():
+        requested=[]
+        try:
+            for p in ids.split(","):
+                i=int(p.strip())
+                if i in DISCOVERY_ITEMS and i not in requested: requested.append(i)
+        except ValueError as e: raise HTTPException(400,"Invalid discovery item ID list") from e
+        if not requested: raise HTTPException(400,"No supported discovery items selected")
+    else:
+        requested=list(DISCOVERY_ITEMS)
+    async with httpx.AsyncClient(timeout=25) as client: results=await asyncio.gather(*(fetch_market(client,i,60) for i in requested),return_exceptions=True)
+    out=[]
+    for i,r in zip(requested,results):
         meta=DISCOVERY_ITEMS[i]
         if isinstance(r,Exception):out.append({"id":i,"name":meta["name"],"error":str(getattr(r,"detail",r))});continue
         l,a=parse_itemmarket(r);save_snapshot(i,l,a);out.append(discovery_result(i,meta,l,a))
-    out.sort(key=lambda x:x.get("deal_score",-1),reverse=True);return {"ok":True,"scanned_at":time.time(),"items":out}
+    out.sort(key=lambda x:x.get("deal_score",-1),reverse=True);return {"ok":True,"scanned_at":time.time(),"items":out,"batch_ids":requested,"pool_count":len(DISCOVERY_ITEMS)}
 @app.get("/api/last-scan")
 async def last_scan():return _last_scan or {"ok":True,"scanned_at":None,"items":[]}
