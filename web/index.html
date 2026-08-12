@@ -9,7 +9,7 @@
 <body>
 <main>
   <header class="topbar">
-    <div><div class="eyebrow">LOCAL MARKET TOOL</div><h1>TornTools</h1><p>Market scanning, niche arbitrage, and equipment pricing.</p></div>
+    <div><div class="eyebrow">LOCAL MARKET TOOL</div><h1>TornTools</h1><p>Market scanning, niche arbitrage, equipment pricing, and live market sniping.</p></div>
     <span id="status" class="pill">Checking…</span>
   </header>
 
@@ -44,6 +44,24 @@
     </section>
 
     <section class="panel"><div class="section-head"><div><h2>Main Watchlist</h2><p class="muted">Your Xanax/eDVD/resale watch items appear here after a scan.</p></div></div><div id="cards" class="cards"><div class="empty">Ready to scan. Choose what you want to watch above and click Scan Now or Start Auto Scan.</div></div></section>
+
+    <section class="panel">
+      <div class="section-head"><div><h2>Sniper Watchlist</h2><p class="muted">Explicit max-buy targets get their own cache-aware API watcher. The companion userscript can react to live Item Market page updates before the API cache catches up.</p></div><span id="sniperCount" class="pill">Loading…</span></div>
+      <div class="toolbar">
+        <button id="sniperToggleBtn" class="secondary" onclick="toggleSniperWatch()">Start Sniper Watch</button>
+        <button class="secondary" onclick="window.open('/static/torn-sniper.user.js','_blank','noopener')">Open / Install Live Userscript</button>
+        <div class="spacer"></div><span id="sniperStatus" class="muted">Loading sniper targets…</span>
+      </div>
+      <div class="scan-status"><span id="sniperState" class="status-dot idle">● Sniper idle</span><span id="sniperNext" class="muted">Next sniper check: —</span></div>
+      <div class="research-note"><strong>Fastest setup:</strong> keep TornTools running, then open the specific target's Item Market page in Torn with the companion userscript enabled. The local API watcher stays cache-aware; the userscript watches only the page you manually loaded and never auto-buys.</div>
+      <div class="equipment-grid" style="margin-bottom:12px">
+        <label>Item ID<input id="sniperItemId" type="number" min="1" step="1" placeholder="e.g. 1086"></label>
+        <label>Name<input id="sniperName" type="text" placeholder="e.g. Driver's License"></label>
+        <label>Max buy price<input id="sniperMaxPrice" type="number" min="1" step="1" placeholder="e.g. 4999"></label>
+      </div>
+      <div class="toolbar"><button onclick="saveSniperTarget()">Add / Update Target</button><span class="muted">Driver's License #1086 is seeded at a $4,999 max the first time this version starts.</span></div>
+      <div class="table-wrap"><table class="research-table"><thead><tr><th>Target</th><th>Max buy</th><th>Current API price</th><th>Status</th><th>Live market</th><th>Actions</th></tr></thead><tbody id="sniperRows"><tr><td colspan="6" class="muted">Loading sniper targets…</td></tr></tbody></table></div>
+    </section>
 
     <section class="panel">
       <div class="section-head"><div><h2>Hidden Deals</h2><p class="muted">Adaptive niche-market scanner for proven opportunities, including items that graduate from the Research Lab.</p></div><button id="notifyBtn" class="secondary mini-btn" onclick="enableNotifications()">Enable Desktop Alerts</button></div>
@@ -96,5 +114,6 @@
   <section class="notice"><strong>Read-only:</strong> TornTools finds opportunities and opens the market for you. It never buys or sells automatically.</section>
 </main>
 <script src="/static/app.js"></script>
+<script src="/static/sniper.js"></script>
 <script src="/static/equipment.js"></script>
 </body></html>
