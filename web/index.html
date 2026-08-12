@@ -46,21 +46,21 @@
     <section class="panel"><div class="section-head"><div><h2>Main Watchlist</h2><p class="muted">Your Xanax/eDVD/resale watch items appear here after a scan.</p></div></div><div id="cards" class="cards"><div class="empty">Ready to scan. Choose what you want to watch above and click Scan Now or Start Auto Scan.</div></div></section>
 
     <section class="panel">
-      <div class="section-head"><div><h2>Hidden Deals</h2><p class="muted">Adaptive niche-market scanner that learns which items actually produce useful bargains and prioritizes them around Torn's global-cache windows.</p></div><button id="notifyBtn" class="secondary mini-btn" onclick="enableNotifications()">Enable Desktop Alerts</button></div>
+      <div class="section-head"><div><h2>Hidden Deals</h2><p class="muted">Adaptive niche-market scanner for proven opportunities, including items that graduate from the Research Lab.</p></div><button id="notifyBtn" class="secondary mini-btn" onclick="enableNotifications()">Enable Desktop Alerts</button></div>
       <div class="toolbar"><button id="discoverBtn" onclick="discoverNow()">Scan Full Hidden Pool</button><button id="discoverAutoBtn" class="secondary" onclick="toggleDiscoverAuto()">Start Smart Hidden Scan</button><label class="check"><input id="hiddenSound" type="checkbox" checked> Alert sound</label><div class="spacer"></div><span id="discoverUpdated" class="muted">Not scanned yet</span></div>
       <div class="scan-status"><span id="discoverState" class="status-dot idle">● Hidden scan idle</span><span id="discoverNext" class="muted">Next check: —</span></div>
       <div class="progress-track"><div id="discoverProgress" class="progress-fill"></div></div>
-      <div class="research-note">The scanner learns from <strong>new Torn cache snapshots only</strong>. Items that repeatedly hit NPC-floor or meaningful under-market prices become <strong>HOT</strong> and are revisited first as soon as another useful cache check is possible. Quiet items become WARM/COLD and use fewer calls, but a <strong>45-second anti-starvation rule</strong> keeps the entire pool covered. Torn globally caches Item Market results for a minimum 30 seconds, so checking a hot item more often cannot bypass that cache; the scheduler instead concentrates requests around the moments a new snapshot can appear.</div>
+      <div class="research-note">The scanner learns from <strong>new Torn cache snapshots only</strong>. NPC-floor items stay protected from cooling off too far. Research graduates enter this same adaptive pool and then earn HOT/WARM/COLD priority from their actual Hidden Deals results.</div>
       <div class="table-wrap"><table class="research-table"><thead><tr><th>Item</th><th>Signal</th><th>Cache state</th><th>Buy</th><th>Market value</th><th>Discount</th><th>NPC floor</th><th>Potential</th><th></th></tr></thead><tbody id="discoverRows"><tr><td colspan="9" class="muted">Run Hidden Deals to check the niche-item pool.</td></tr></tbody></table></div>
     </section>
 
     <section class="panel">
-      <div class="section-head"><div><h2>Market Research</h2><p class="muted">Quietly measures less-obvious markets and promotes the ones that repeatedly show useful movement.</p></div></div>
-      <div class="toolbar"><button id="learnBtn" onclick="learnNow()">Sample Research Markets</button><button id="learnAutoBtn" class="secondary" onclick="toggleLearnAuto()">Start Quiet Learning</button><div class="spacer"></div><span id="learnUpdated" class="muted">No research data yet</span></div>
-      <div class="scan-status"><span id="learnState" class="status-dot idle">● Learning idle</span><span id="learnNext" class="muted">Next sample: —</span></div>
+      <div class="section-head"><div><h2>Research Lab</h2><p class="muted">Builds a case for less-obvious markets. Items that repeatedly produce real bargain patterns can automatically graduate into Hidden Deals.</p></div></div>
+      <div class="toolbar"><button id="learnBtn" onclick="learnNow()">Run Deep Research Sample</button><button id="learnAutoBtn" class="secondary" onclick="toggleLearnAuto()">Start Research Lab</button><div class="spacer"></div><span id="learnUpdated" class="muted">No research data yet</span></div>
+      <div class="scan-status"><span id="learnState" class="status-dot idle">● Research idle</span><span id="learnNext" class="muted">Next research sample: —</span></div>
       <div class="progress-track"><div id="learnProgress" class="progress-fill"></div></div>
-      <div class="research-note">A promotion candidate needs enough samples, strong activity, and repeated price-gap behavior. This is market churn, not confirmed sales volume.</div>
-      <div class="table-wrap"><table class="research-table"><thead><tr><th>Item</th><th>Signal</th><th>Buy</th><th>Market value</th><th>Discount</th><th>Activity</th><th>Samples</th><th>Gap events</th><th>Largest gap</th><th></th></tr></thead><tbody id="liquidityRows"><tr><td colspan="10" class="muted">Run a few samples to start learning.</td></tr></tbody></table></div>
+      <div id="researchRequirements" class="research-note"><strong>What it measures:</strong> repeat 8%+ bargain snapshots, 15%+ strong discounts, market activity, listing churn, floor changes, gap behavior, and whether the edge repeats often enough to justify permanent Hidden Deals coverage.</div>
+      <div class="table-wrap"><table class="research-table"><thead><tr><th>Item / score</th><th>Stage</th><th>Current</th><th>Samples</th><th>Bargain hits</th><th>Strong hits</th><th>Discount history</th><th>Activity</th><th>Listing churn</th><th>Gap behavior</th><th>Floor changes</th><th></th></tr></thead><tbody id="liquidityRows"><tr><td colspan="12" class="muted">Run samples to start building evidence.</td></tr></tbody></table></div>
     </section>
   </div>
 
@@ -80,7 +80,7 @@
       <div class="table-wrap"><table class="research-table"><thead><tr><th>Item</th><th>Category</th><th>Quality</th><th>Stats</th><th>Type</th><th>Status</th><th></th></tr></thead><tbody id="eqInventoryRows"><tr><td colspan="7" class="muted">Open this tab to load your equipment.</td></tr></tbody></table></div>
     </section>
 
-    <section class="panel">
+    <section id="equipmentCheckerPanel" class="panel">
       <div class="section-head"><div><h2>Equipment Checker</h2><p class="muted">Check whether a plain white weapon or armor roll is worth putting on the market instead of vendoring it.</p></div></div>
       <div class="research-note">Click <strong>Use</strong> above to fill these fields from your inventory, or enter them manually. TornTools compares only plain listings with no RW bonuses or rarity. Torn's base vendor/NPC sell value and standard market value are fetched automatically when available.</div>
       <div class="equipment-grid">
