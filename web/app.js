@@ -3,9 +3,11 @@ const money = new Intl.NumberFormat("en-US", {style:"currency", currency:"USD", 
 let timer=null, learnTimer=null, discoverTimer=null, learnCountdownTimer=null, discoverCountdownTimer=null;
 let metadata=[], discoveryIds=[], discoverBatchIndex=0, hiddenResults=new Map();
 let lastAlertKey=null, hiddenAlertState=new Map(), hiddenCacheState=new Map(), lastResearchCandidates=new Set();
-let discoverRunning=false;
+let discoverRunning=false, discoverRequestRunning=false;
+let hiddenPriorityStats=new Map();
 
 const DISCOVER_ITEM_SECONDS=1;
+const HIDDEN_STATS_KEY="torntools.hiddenPriority.v1";
 const $=id=>document.getElementById(id);
 
 async function call(path,opts={}) {
@@ -37,6 +39,44 @@ function loadSavedSettings(){
     if(s.hiddenSound!==undefined)$("hiddenSound").checked=!!s.hiddenSound;
     return Array.isArray(s.watched)?s.watched:null;
   }catch{return null}
+}
+
+function loadHiddenPriorityStats(){
+  try{
+    const raw=JSON.parse(localStorage.getItem(HIDDEN_STATS_KEY)||"{}");
+    hiddenPriorityStats=new Map(Object.entries(raw).map(([id,v])=>[Number(id),v]));
+  }catch{hiddenPriorityStats=new Map()}
+}
+function saveHiddenPriorityStats(){
+  try{localStorage.setItem(HIDDEN_STATS_KEY,JSON.stringify(Object.fromEntries(hiddenPriorityStats)))}catch{}
+}
+function hiddenStat(id){
+  id=Number(id);
+  if(!hiddenPriorityStats.has(id))hiddenPriorityStats.set(id,{snapshots:0,hits:0,strongHits:0,npcHits:0,lastSnapshotTs:0,lastHitAt:0,lastRequestAt:0,consecutiveMisses:0});
+  return hiddenPriorityStats.get(id);
+}
+function isHiddenHit(x){return x&& !x.error && (x.kind==="NPC FLOOR" || (x.kind==="UNDER MARKET"&&Number(x.discount_pct||0)>=8))}
+function isStrongHiddenHit(x){return x&& !x.error && (x.kind==="NPC FLOOR" || (x.kind==="UNDER MARKET"&&Number(x.discount_pct||0)>=15))}
+function recordHiddenOutcome(x,isNewSnapshot){
+  if(!x||x.error)return;
+  const s=hiddenStat(x.id),now=Date.now();s.lastRequestAt=now;
+  if(!isNewSnapshot)return;
+  s.snapshots=(s.snapshots||0)+1;
+  if(isHiddenHit(x)){s.hits=(s.hits||0)+1;s.lastHitAt=now;s.consecutiveMisses=0}else s.consecutiveMisses=(s.consecutiveMisses||0)+1;
+  if(isStrongHiddenHit(x))s.strongHits=(s.strongHits||0)+1;
+  if(x.kind==="NPC FLOOR")s.npcHits=(s.npcHits||0)+1;
+  s.lastSnapshotTs=Number(x.cache_timestamp||0);
+  hiddenPriorityStats.set(Number(x.id),s);saveHiddenPriorityStats();
+}
+function hiddenPriorityInfo(id,x=null){
+  const s=hiddenStat(id),n=Number(s.snapshots||0),hits=Number(s.hits||0),strong=Number(s.strongHits||0),npc=Number(s.npcHits||0);
+  const hitRate=n?hits/n:0,strongRate=n?strong/n:0,currentHit=isHiddenHit(x);
+  let label="LEARNING",rank=2;
+  if(n>=3&&(npc>=1||strongRate>=.25||hitRate>=.45)){label="HOT";rank=4}
+  else if(n>=3&&(strongRate>=.10||hitRate>=.18)){label="WARM";rank=3}
+  else if(n>=6&&hitRate<.08&&(s.consecutiveMisses||0)>=4){label="COLD";rank=1}
+  if(currentHit){label="HOT";rank=5}
+  return{label,rank,n,hits,strong,npc,hitRate,strongRate};
 }
 
 async function appStatus(){
@@ -103,11 +143,12 @@ async function enableNotifications(){if(!("Notification" in window))return;try{a
 function cacheAge(x){if(!x.cache_timestamp)return null;return Math.max(0,Math.floor(Date.now()/1000-Number(x.cache_timestamp)))}
 
 function recordHiddenSnapshot(x){
-  if(!x||x.error)return;
+  if(!x||x.error)return false;
   const id=Number(x.id),ts=Number(x.cache_timestamp||0),now=Date.now(),prior=hiddenCacheState.get(id);
-  if(!prior){hiddenCacheState.set(id,{lastTimestamp:ts,changedAt:now,requestsSinceChange:0,lastRequestAt:now});return}
+  if(!prior){hiddenCacheState.set(id,{lastTimestamp:ts,changedAt:now,requestsSinceChange:0,lastRequestAt:now});return true}
   const changed=!!ts&&!!prior.lastTimestamp&&ts!==prior.lastTimestamp;
   hiddenCacheState.set(id,{lastTimestamp:ts||prior.lastTimestamp,changedAt:changed?now:prior.changedAt,requestsSinceChange:changed?0:(prior.requestsSinceChange||0)+1,lastRequestAt:now});
+  return changed;
 }
 
 function freshnessInfo(x){
@@ -121,14 +162,18 @@ function freshnessInfo(x){
 
 function renderDiscovery(items){
   if(!items.length){$("discoverRows").innerHTML=`<tr><td colspan="9" class="muted">No discovery results yet.</td></tr>`;return}
-  const sorted=[...items].sort((a,b)=>(b.deal_score||-1)-(a.deal_score||-1));
+  const sorted=[...items].sort((a,b)=>{
+    const pa=hiddenPriorityInfo(a.id,a),pb=hiddenPriorityInfo(b.id,b);
+    return pb.rank-pa.rank || (b.deal_score||-1)-(a.deal_score||-1);
+  });
   $("discoverRows").innerHTML=sorted.map(x=>{
     if(x.error)return`<tr><td><strong>${x.name}</strong></td><td colspan="7" class="bad">${x.error}</td><td></td></tr>`;
-    const f=freshnessInfo(x),high=x.kind==="NPC FLOOR",normal=x.kind==="UNDER MARKET"&&Number(x.discount_pct||0)>=15,mild=x.kind==="UNDER MARKET"&&!normal;
+    const f=freshnessInfo(x),p=hiddenPriorityInfo(x.id,x),high=x.kind==="NPC FLOOR",normal=x.kind==="UNDER MARKET"&&Number(x.discount_pct||0)>=15,mild=x.kind==="UNDER MARKET"&&!normal;
     const rowClass=high?"priority-hit":normal?"research-hit":mild?"mild-hit":"";
     const potential=x.floor_profit>0?`${money.format(x.floor_profit)} direct cash-out spread`:(x.discount_pct>=8?`${x.discount_pct.toFixed(1)}% under market`:"—");
     const ageText=f.age===null?"Torn cache timestamp unavailable":`Torn snapshot ${f.age}s old · ${f.delay}s enforced delay`;
-    return`<tr class="${rowClass}"><td><strong>${x.name}</strong><br><small class="muted">${x.activity||"Learning"} · ${x.samples||0} samples</small></td><td><strong>${x.kind}</strong></td><td><span class="freshness ${f.className}">${f.label}</span><br><small class="muted">${ageText}</small></td><td>${money.format(x.lowest||0)}${x.qty_floor>1?` × ${x.qty_floor}`:""}</td><td>${x.market_value?money.format(x.market_value):"—"}</td><td>${Number(x.discount_pct||0).toFixed(1)}%</td><td>${x.hard_floor?money.format(x.hard_floor):"—"}</td><td>${potential}</td><td><button class="mini-btn" onclick="window.open('${x.market_url}','_blank','noopener')">Open</button></td></tr>`;
+    const hitText=p.n?`${p.hits}/${p.n} hit snapshots · ${(p.hitRate*100).toFixed(0)}%`:`learning hit rate`;
+    return`<tr class="${rowClass}"><td><strong>${x.name}</strong><br><small class="muted"><strong>${p.label}</strong> · ${hitText}</small></td><td><strong>${x.kind}</strong></td><td><span class="freshness ${f.className}">${f.label}</span><br><small class="muted">${ageText}</small></td><td>${money.format(x.lowest||0)}${x.qty_floor>1?` × ${x.qty_floor}`:""}</td><td>${x.market_value?money.format(x.market_value):"—"}</td><td>${Number(x.discount_pct||0).toFixed(1)}%</td><td>${x.hard_floor?money.format(x.hard_floor):"—"}</td><td>${potential}</td><td><button class="mini-btn" onclick="window.open('${x.market_url}','_blank','noopener')">Open</button></td></tr>`;
   }).join("");
 }
 
@@ -168,35 +213,71 @@ async function discoverNow(itemIds=null){
   if(!isAuto){$("discoverBtn").disabled=true;$("discoverBtn").textContent="Scanning full pool…"}
   try{
     const suffix=isAuto?`?ids=${encodeURIComponent(itemIds.join(","))}`:"",d=await call(`/api/discover${suffix}`,{method:"POST"});
-    for(const x of d.items||[]){recordHiddenSnapshot(x);hiddenResults.set(Number(x.id),x)}
+    for(const x of d.items||[]){const changed=recordHiddenSnapshot(x);recordHiddenOutcome(x,changed);hiddenResults.set(Number(x.id),x)}
     renderDiscovery([...hiddenResults.values()]);processHiddenAlerts(d.items||[]);
     $("discoverUpdated").textContent=`Last check ${new Date(d.scanned_at*1000).toLocaleTimeString()} · ${hiddenResults.size}/${d.pool_count||discoveryIds.length} items seen`;
-    if(discoverRunning&&discoveryIds.length){const progress=(discoverBatchIndex%discoveryIds.length)/discoveryIds.length*100;$("discoverProgress").style.width=`${progress}%`}
   }catch(e){msg(e.message,true)}finally{if(!isAuto){$("discoverBtn").disabled=false;$("discoverBtn").textContent="Scan Full Hidden Pool"}}
 }
 
-async function runDiscoveryItem(){
-  if(!discoverRunning||!discoveryIds.length)return;
-  const id=discoveryIds[discoverBatchIndex%discoveryIds.length];discoverBatchIndex=(discoverBatchIndex+1)%discoveryIds.length;
-  await discoverNow([id]);
-  if(discoverRunning)discoverTimer=setTimeout(runDiscoveryItem,DISCOVER_ITEM_SECONDS*1000);
+function hiddenNextDue(id){
+  const now=Date.now(),x=hiddenResults.get(Number(id)),s=hiddenStat(id),c=hiddenCacheState.get(Number(id)),p=hiddenPriorityInfo(id,x);
+  if(!x||!c)return 0;
+  const delay=Math.max(1,Number(x.cache_delay||30))*1000,cacheTs=Number(x.cache_timestamp||0)*1000;
+  if(cacheTs&&now<cacheTs+delay)return cacheTs+delay+250;
+  const pending=Number(c.requestsSinceChange||0)>0;
+  const pendingIntervals={5:4000,4:5000,3:8000,2:11000,1:15000};
+  const normalIntervals={5:6000,4:8000,3:14000,2:22000,1:35000};
+  const gap=(pending?pendingIntervals:normalIntervals)[p.rank]||12000;
+  return Math.min(Number(s.lastRequestAt||0)+gap,Number(s.lastRequestAt||0)+45000);
+}
+function chooseNextHiddenId(){
+  if(!discoveryIds.length)return null;
+  const now=Date.now();let best=null,bestScore=-Infinity;
+  for(const rawId of discoveryIds){
+    const id=Number(rawId),x=hiddenResults.get(id),s=hiddenStat(id),p=hiddenPriorityInfo(id,x),due=hiddenNextDue(id);
+    const since=now-Number(s.lastRequestAt||0);
+    if(!x){return id}
+    if(now<due&&since<45000)continue;
+    const overdue=Math.max(0,(now-due)/1000),starve=Math.max(0,(since-30000)/1000);
+    const currentBonus=isStrongHiddenHit(x)?30:isHiddenHit(x)?18:0;
+    const score=p.rank*20+overdue+starve*2+currentBonus;
+    if(score>bestScore){bestScore=score;best=id}
+  }
+  return best;
+}
+function updateHiddenSchedulerStatus(nextId=null){
+  if(!discoverRunning)return;
+  const hot=discoveryIds.filter(id=>hiddenPriorityInfo(id,hiddenResults.get(Number(id))).label==="HOT").length;
+  $("discoverState").textContent=`● Adaptive Hidden scan · ${hot} hot item${hot===1?"":"s"}`;$("discoverState").className="status-dot live";
+  if(nextId){const x=hiddenResults.get(Number(nextId)),p=hiddenPriorityInfo(nextId,x);$("discoverNext").textContent=`Next priority: ${x?.name||`Item ${nextId}`} · ${p.label}`}
+  else $("discoverNext").textContent="Waiting for the next useful cache window…";
+}
+async function runDiscoveryScheduler(){
+  if(!discoverRunning)return;
+  if(discoverRequestRunning){discoverTimer=setTimeout(runDiscoveryScheduler,DISCOVER_ITEM_SECONDS*1000);return}
+  const id=chooseNextHiddenId();updateHiddenSchedulerStatus(id);
+  if(id!==null){
+    discoverRequestRunning=true;
+    try{await discoverNow([id])}finally{discoverRequestRunning=false}
+  }
+  if(discoverRunning)discoverTimer=setTimeout(runDiscoveryScheduler,DISCOVER_ITEM_SECONDS*1000);
 }
 
 function stopDiscoverAuto(){
-  discoverRunning=false;if(discoverTimer)clearTimeout(discoverTimer);discoverTimer=null;
+  discoverRunning=false;discoverRequestRunning=false;if(discoverTimer)clearTimeout(discoverTimer);discoverTimer=null;
   $("discoverAutoBtn").textContent="Start Smart Hidden Scan";$("discoverAutoBtn").classList.add("secondary");stopCountdown("discover");
 }
 function toggleDiscoverAuto(){
   if(discoverRunning)return stopDiscoverAuto();
   discoverRunning=true;discoverBatchIndex=0;
-  $("discoverAutoBtn").textContent="Stop Smart Hidden Scan";$("discoverAutoBtn").classList.remove("secondary");
-  $("discoverState").textContent="● Smart Hidden scan · 1 item/second";$("discoverState").className="status-dot live";
-  $("discoverNext").textContent=`Full ${discoveryIds.length||17}-item pass ≈ ${discoveryIds.length||17}s · detects Torn cache changes continuously`;
+  $("discoverAutoBtn").textContent="Stop Adaptive Hidden Scan";$("discoverAutoBtn").classList.remove("secondary");
+  $("discoverState").textContent="● Adaptive Hidden scan · learning priorities";$("discoverState").className="status-dot live";
+  $("discoverNext").textContent="Hot markets will be revisited first; cold markets still have a 45s anti-starvation check.";
   $("discoverProgress").style.width="0%";
-  runDiscoveryItem();
+  runDiscoveryScheduler();
 }
 
 ["interval","minProfit","minRoi","stockDiscount","sound","hiddenSound"].forEach(id=>document.addEventListener("change",e=>{if(e.target.id===id)saveSettings()}));
 $("key").addEventListener("keydown",e=>{if(e.key==="Enter")loadKey()});
 setInterval(()=>{if(hiddenResults.size)renderDiscovery([...hiddenResults.values()])},1000);
-loadSavedSettings();appStatus();
+loadSavedSettings();loadHiddenPriorityStats();appStatus();
