@@ -1,5 +1,5 @@
 from pathlib import Path
-import asyncio, json, sqlite3, time
+import asyncio, json, os, sqlite3, time
 from typing import Any
 import httpx
 from fastapi import FastAPI, HTTPException, Query
@@ -7,15 +7,33 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-BASE=Path(__file__).resolve().parent; WEB=BASE/"web"; DB_PATH=BASE/"torntools.sqlite3"
+BASE=Path(__file__).resolve().parent; WEB=BASE/"web"; DB_PATH=BASE/"torntools.sqlite3"; ENV_PATH=BASE/".env"
 API_BASE="https://api.torn.com/v2"; MARKET_FEE=.05
 ITEMS={206:{"name":"Xanax","mode":"stock","enabled":True,"note":"Personal use / jumps"},366:{"name":"Erotic DVD","mode":"stock","enabled":True,"note":"Personal use / happy jumps"},370:{"name":"Drug Pack","mode":"flip","enabled":True,"note":"Resale candidate"},283:{"name":"Donator Pack","mode":"flip","enabled":False,"note":"Higher-capital resale candidate"}}
 LEARN_ITEMS={365:"Box of Medical Supplies",367:"Feathery Hotel Coupon",369:"Lottery Voucher",530:"Can of Munster",532:"Can of Red Cow",533:"Can of Taurine Elite",555:"Can of X-MASS",818:"Six-Pack of Energy Drink"}
 DISCOVERY_ITEMS={
 1219:{"name":"Oxygen Tank"},1460:{"name":"Methane Tank"},1200:{"name":"Nitrous Tank"},883:{"name":"Bank Statement"},1344:{"name":"Medical Bill"},1348:{"name":"Aluminum Plate"},1321:{"name":"Adhesive Plastic"},1082:{"name":"Zip Wallet"},
 1381:{"name":"ID Badge","hard_floor":105000},1350:{"name":"Police Badge","hard_floor":230000},1379:{"name":"ATM Key","hard_floor":195000},1339:{"name":"Bank Check","hard_floor":180000},1343:{"name":"Passport","hard_floor":580000},1342:{"name":"Travel Visa","hard_floor":122500},1086:{"name":"Driver's License","hard_floor":5000},1345:{"name":"Prescription","hard_floor":75000},1349:{"name":"License Plate","hard_floor":95000}}
-app=FastAPI(title="TornTools Local Scanner",version="0.4.0"); app.mount("/static",StaticFiles(directory=WEB),name="static")
-_api_key:str|None=None; _last_scan:dict[str,Any]|None=None
+
+def load_local_env_key():
+    """Load TORN_API_KEY from process environment or local .env file."""
+    key=os.environ.get("TORN_API_KEY","").strip()
+    if key:return key
+    if not ENV_PATH.exists():return None
+    try:
+        for raw in ENV_PATH.read_text(encoding="utf-8").splitlines():
+            line=raw.strip()
+            if not line or line.startswith("#") or "=" not in line:continue
+            name,value=line.split("=",1)
+            if name.strip()=="TORN_API_KEY":
+                value=value.strip().strip('"').strip("'")
+                return value or None
+    except OSError:
+        return None
+    return None
+
+app=FastAPI(title="TornTools Local Scanner",version="0.4.1"); app.mount("/static",StaticFiles(directory=WEB),name="static")
+_api_key:str|None=load_local_env_key(); _last_scan:dict[str,Any]|None=None
 class KeyPayload(BaseModel): api_key:str
 
 def init_db():
@@ -91,7 +109,7 @@ def discovery_result(i,meta,listings,avg):
 @app.get("/")
 async def home():return FileResponse(WEB/"index.html")
 @app.get("/api/status")
-async def status():return {"ok":True,"version":"0.4.0","key_loaded":bool(_api_key),"market_fee_pct":5,"items":[{"id":i,**m} for i,m in ITEMS.items()],"discovery_count":len(DISCOVERY_ITEMS)}
+async def status():return {"ok":True,"version":"0.4.1","key_loaded":bool(_api_key),"key_source":"local .env / environment" if _api_key else None,"market_fee_pct":5,"items":[{"id":i,**m} for i,m in ITEMS.items()],"discovery_count":len(DISCOVERY_ITEMS)}
 @app.post("/api/key")
 async def set_key(p:KeyPayload):
     global _api_key
