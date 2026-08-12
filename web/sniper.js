@@ -19,7 +19,7 @@ function sniperDueAt(target) {
   if (!x) return last ? last + 5000 : 0;
   const cacheTs = Number(x.cache_timestamp || 0) * 1000;
   const delay = Math.max(1, Number(x.cache_delay || 30)) * 1000;
-  if (cacheTs) return Math.max(last + 1000, cacheTs + delay + 100);
+  if (cacheTs) return Math.max(last + 3000, cacheTs + delay + 100);
   return last + 10000;
 }
 
