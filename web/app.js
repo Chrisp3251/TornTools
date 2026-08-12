@@ -85,10 +85,10 @@ async function loadKey() {
   if (!key) return msg("Paste a key first.", true);
   try {
     document.getElementById("loadKeyBtn").disabled = true;
-    msg("Validating key…");
-    await call("/api/key", {method:"POST", body:JSON.stringify({api_key:key})});
+    msg("Loading key into backend memory…");
+    const result = await call("/api/key", {method:"POST", body:JSON.stringify({api_key:key})});
     document.getElementById("key").value = "";
-    msg("Key validated and loaded into backend memory.");
+    msg(result.message || "Key loaded. Run a scan to verify market access.");
     await status();
     await scanNow();
   } catch(e) { msg(e.message, true); }
@@ -204,7 +204,12 @@ async function scanNow() {
   try {
     const d = await call(`/api/scan?ids=${encodeURIComponent(ids.join(","))}`);
     renderScan(d);
-    msg(`Scanned ${d.items.length} item(s).`);
+    const errors = (d.items || []).filter(x => x.error);
+    if (errors.length) {
+      msg(`Scan completed, but ${errors.length} item(s) returned Torn API errors. See the red cards below.`, true);
+    } else {
+      msg(`Scanned ${d.items.length} item(s).`);
+    }
   } catch(e) { msg(e.message, true); }
   finally { btn.disabled = false; btn.textContent = "Scan Now"; }
 }
