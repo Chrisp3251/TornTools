@@ -143,6 +143,11 @@ async function loadSelectedItemValues(i) {
   }
 }
 
+function scrollToEquipmentChecker() {
+  const target=document.getElementById("eqItemId")?.closest("section") || document.getElementById("eqItemId");
+  if (target) target.scrollIntoView({behavior:"smooth",block:"start"});
+}
+
 async function useInventoryItem(index) {
   const i=equipmentInventory[index];
   if (!i) return;
@@ -155,6 +160,7 @@ async function useInventoryItem(index) {
   const selected=document.getElementById("eqSelected");
   if (selected) selected.textContent=`Selected: ${i.name} · ${inventoryCategory(i)} · ${i.quality==null?"quality unknown":`${Number(i.quality).toFixed(2)}% quality`}${i.plain?"":" · RW/bonused"}`;
   document.getElementById("equipmentResult").innerHTML='<div class="empty">Stats loaded. Fetching Torn vendor and market values…</div>';
+  scrollToEquipmentChecker();
   const meta=await loadSelectedItemValues(i);
   document.getElementById("equipmentResult").innerHTML=meta
     ? '<div class="empty">Stats and Torn values loaded. Click Check Equipment.</div>'
