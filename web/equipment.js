@@ -31,24 +31,68 @@ function statText(i) {
   return parts.join(" · ") || "—";
 }
 
+function inventoryCategory(i) {
+  return String(i.category || i.type || i.sub_type || "Other").trim() || "Other";
+}
+
+function populateCategoryFilter() {
+  const select=document.getElementById("eqCategoryFilter");
+  if (!select) return;
+  const current=select.value || "all";
+  const categories=[...new Set(equipmentInventory.map(inventoryCategory))].sort((a,b)=>a.localeCompare(b));
+  select.innerHTML='<option value="all">All categories</option>'+categories.map(c=>`<option value="${c.replace(/"/g,'&quot;')}">${c}</option>`).join("");
+  select.value=categories.includes(current) ? current : "all";
+}
+
+function filteredInventory() {
+  const category=document.getElementById("eqCategoryFilter")?.value || "all";
+  const status=document.getElementById("eqStatusFilter")?.value || "all";
+  const sort=document.getElementById("eqSort")?.value || "category";
+  const search=(document.getElementById("eqSearch")?.value || "").trim().toLowerCase();
+  let items=equipmentInventory.filter(i=>{
+    if (category!=="all" && inventoryCategory(i)!==category) return false;
+    if (status==="plain" && !i.plain) return false;
+    if (status==="rw" && i.plain) return false;
+    if (status==="equipped" && !i.equipped) return false;
+    if (search) {
+      const hay=[i.name,i.item_id,i.uid,inventoryCategory(i),i.type,i.sub_type,i.rarity,statText(i)].join(" ").toLowerCase();
+      if (!hay.includes(search)) return false;
+    }
+    return true;
+  });
+  items=[...items];
+  if (sort==="name") items.sort((a,b)=>String(a.name).localeCompare(String(b.name)) || Number(b.quality||0)-Number(a.quality||0));
+  else if (sort==="quality_desc") items.sort((a,b)=>Number(b.quality||-1)-Number(a.quality||-1) || String(a.name).localeCompare(String(b.name)));
+  else if (sort==="quality_asc") items.sort((a,b)=>Number(a.quality??999)-Number(b.quality??999) || String(a.name).localeCompare(String(b.name)));
+  else items.sort((a,b)=>inventoryCategory(a).localeCompare(inventoryCategory(b)) || String(a.name).localeCompare(String(b.name)) || Number(b.quality||0)-Number(a.quality||0));
+  return items;
+}
+
 function renderInventory(items) {
   const rows=document.getElementById("eqInventoryRows");
+  const visible=document.getElementById("eqVisibleCount");
+  if (visible) visible.textContent=`${items.length} shown / ${equipmentInventory.length} loaded`;
   if (!items.length) {
-    rows.innerHTML='<tr><td colspan="6" class="muted">No equipment with individual stats was returned by Torn.</td></tr>';
+    rows.innerHTML='<tr><td colspan="7" class="muted">No equipment matches those filters.</td></tr>';
     return;
   }
-  rows.innerHTML=items.map((i,index)=>{
+  rows.innerHTML=items.map(i=>{
     const status=i.plain ? (i.equipped ? "PLAIN · EQUIPPED" : "PLAIN") : (i.rarity ? String(i.rarity).toUpperCase() : "BONUSED/RW");
     const rowClass=i.plain ? "" : "mild-hit";
     return `<tr class="${rowClass}">
       <td><strong>${i.name}</strong><br><small class="muted">Item #${i.item_id}${i.uid?` · ${i.uid}`:""}</small></td>
+      <td><strong>${inventoryCategory(i)}</strong></td>
       <td>${i.quality==null?"—":`${Number(i.quality).toFixed(2)}%`}</td>
       <td>${statText(i)}</td>
-      <td>${i.type||"—"}</td>
+      <td>${i.type||i.sub_type||"—"}</td>
       <td>${status}</td>
-      <td><button class="mini-btn" onclick="useInventoryItem(${index})">Use</button></td>
+      <td><button class="mini-btn" onclick="useInventoryItem(${i._sourceIndex})">Use</button></td>
     </tr>`;
   }).join("");
+}
+
+function applyInventoryFilters() {
+  renderInventory(filteredInventory());
 }
 
 async function loadEquipmentInventory(force=false) {
@@ -58,26 +102,54 @@ async function loadEquipmentInventory(force=false) {
   const rows=document.getElementById("eqInventoryRows");
   if (btn) { btn.disabled=true; btn.textContent="Loading…"; }
   if (status) status.textContent="Loading your Torn inventory…";
-  if (rows) rows.innerHTML='<tr><td colspan="6" class="muted">Loading equipment…</td></tr>';
+  if (rows) rows.innerHTML='<tr><td colspan="7" class="muted">Loading equipment…</td></tr>';
   try {
     const r=await fetch("/api/equipment/inventory");
     let d={};
     try { d=await r.json(); } catch {}
     if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
-    equipmentInventory=d.items||[];
+    equipmentInventory=(d.items||[]).map((i,index)=>({...i,_sourceIndex:index}));
     equipmentInventoryLoaded=true;
-    renderInventory(equipmentInventory);
-    if (status) status.innerHTML=`Loaded <strong>${equipmentInventory.length}</strong> equipment item(s) from your Torn inventory. Plain white items are ideal for this checker; RW/bonused items are shown but should be priced differently.`;
+    populateCategoryFilter();
+    applyInventoryFilters();
+    if (status) {
+      const extras=[];
+      if (d.truncated) extras.push("inventory detail scan was capped");
+      if (d.detail_errors) extras.push(`${d.detail_errors} detail lookup error(s)`);
+      status.innerHTML=`Loaded <strong>${equipmentInventory.length}</strong> equipment item(s) from your Torn inventory. Use the category, status, quality sort, or search controls to narrow the list.${extras.length?` <span class="warn">${extras.join(" · ")}</span>`:""}`;
+    }
   } catch(e) {
     equipmentInventoryLoaded=false;
-    if (rows) rows.innerHTML='<tr><td colspan="6" class="muted">Inventory unavailable. Manual equipment checking still works below.</td></tr>';
+    if (rows) rows.innerHTML='<tr><td colspan="7" class="muted">Inventory unavailable. Manual equipment checking still works below.</td></tr>';
     if (status) status.innerHTML=`<span class="bad">Could not load inventory: ${e.message}</span><br><span class="muted">If Torn reports an access error, your API key likely needs the user inventory selection enabled.</span>`;
   } finally {
     if (btn) { btn.disabled=false; btn.textContent="Refresh Inventory"; }
   }
 }
 
-function useInventoryItem(index) {
+function equipmentParams(i,vendor=0) {
+  const params=new URLSearchParams({item_id:String(i.item_id),quality:String(i.quality),vendor_sell:String(Math.max(0,Math.trunc(vendor||0)))});
+  if (i.damage != null) params.set("damage",String(i.damage));
+  if (i.accuracy != null) params.set("accuracy",String(i.accuracy));
+  if (i.armor != null) params.set("armor",String(i.armor));
+  return params;
+}
+
+async function loadSelectedMarketValue(i) {
+  const el=document.getElementById("eqSelectedMarket");
+  if (!el || i.quality==null) return;
+  el.textContent="Torn market value: checking…";
+  try {
+    const r=await fetch(`/api/equipment/check?${equipmentParams(i,0).toString()}`);
+    let d={}; try{d=await r.json()}catch{}
+    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    el.innerHTML=`Torn market value: <strong>${d.market_average ? eqMoney.format(d.market_average) : "—"}</strong><span class="muted"> · from Torn's current Item Market metadata</span>`;
+  } catch(e) {
+    el.innerHTML=`Torn market value: <span class="muted">unavailable (${e.message})</span>`;
+  }
+}
+
+async function useInventoryItem(index) {
   const i=equipmentInventory[index];
   if (!i) return;
   document.getElementById("eqItemId").value=i.item_id ?? "";
@@ -87,8 +159,9 @@ function useInventoryItem(index) {
   document.getElementById("eqArmor").value=i.armor ?? "";
   document.getElementById("eqVendor").value="";
   const selected=document.getElementById("eqSelected");
-  if (selected) selected.textContent=`Selected: ${i.name} · ${i.quality==null?"quality unknown":`${Number(i.quality).toFixed(2)}% quality`}${i.plain?"":" · RW/bonused"}`;
+  if (selected) selected.textContent=`Selected: ${i.name} · ${inventoryCategory(i)} · ${i.quality==null?"quality unknown":`${Number(i.quality).toFixed(2)}% quality`}${i.plain?"":" · RW/bonused"}`;
   document.getElementById("equipmentResult").innerHTML='<div class="empty">Stats loaded from your inventory. Enter the vendor sell value, then click Check Equipment.</div>';
+  loadSelectedMarketValue(i);
   document.getElementById("eqVendor").focus();
 }
 
@@ -106,6 +179,8 @@ function renderEquipmentResult(d) {
   const percentile = d.quality_percentile == null ? "—" : `${d.quality_percentile.toFixed(1)}th percentile`;
   const cache = d.cache || {};
   const cacheText = cache.cache_age_seconds == null ? "Unknown market-cache age" : `${cache.freshness} · ${cache.cache_age_seconds}s old`;
+  const selectedMarket=document.getElementById("eqSelectedMarket");
+  if (selectedMarket) selectedMarket.innerHTML=`Torn market value: <strong>${d.market_average ? eqMoney.format(d.market_average) : "—"}</strong><span class="muted"> · from Torn's current Item Market metadata</span>`;
   box.innerHTML = `
     <article class="equipment-result-card ${verdictClass}">
       <div class="eq-result-head">
@@ -121,7 +196,7 @@ function renderEquipmentResult(d) {
       </div>
       <div class="research-note"><strong>Confidence: ${d.confidence}</strong> · ${d.close_comparables} close-quality comparables · ${d.plain_listings} plain listings checked. Asking prices are not confirmed sale prices.</div>
       <div class="table-wrap"><table class="research-table"><thead><tr><th>Comparable quality</th><th>Stats</th><th>Asking price</th></tr></thead><tbody>${(d.comps || []).map(compRow).join("") || '<tr><td colspan="3">No comparable listings.</td></tr>'}</tbody></table></div>
-      <div class="toolbar eq-actions"><button onclick="window.open('${d.market_url}','_blank','noopener')">Open This Item Market</button><span class="muted">Market average: ${d.market_average ? eqMoney.format(d.market_average) : "—"} · Median closest ask: ${d.median_ask ? eqMoney.format(d.median_ask) : "—"}</span></div>
+      <div class="toolbar eq-actions"><button onclick="window.open('${d.market_url}','_blank','noopener')">Open This Item Market</button><span class="muted">Torn market value: ${d.market_average ? eqMoney.format(d.market_average) : "—"} · Median closest ask: ${d.median_ask ? eqMoney.format(d.median_ask) : "—"}</span></div>
     </article>`;
 }
 
@@ -161,6 +236,8 @@ function clearEquipment() {
   ["eqItemId","eqQuality","eqDamage","eqAccuracy","eqArmor","eqVendor"].forEach(id => { const el=document.getElementById(id); if(el) el.value=""; });
   const selected=document.getElementById("eqSelected");
   if (selected) selected.textContent="No inventory item selected.";
+  const market=document.getElementById("eqSelectedMarket");
+  if (market) market.textContent="Torn market value: —";
   document.getElementById("equipmentResult").innerHTML = '<div class="empty">Choose an inventory item above or enter an item and its stats, then check the market.</div>';
 }
 
