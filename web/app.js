@@ -70,13 +70,14 @@ function recordHiddenOutcome(x,isNewSnapshot){
 }
 function hiddenPriorityInfo(id,x=null){
   const s=hiddenStat(id),n=Number(s.snapshots||0),hits=Number(s.hits||0),strong=Number(s.strongHits||0),npc=Number(s.npcHits||0);
-  const hitRate=n?hits/n:0,strongRate=n?strong/n:0,currentHit=isHiddenHit(x);
+  const hitRate=n?hits/n:0,strongRate=n?strong/n:0,currentHit=isHiddenHit(x),hardFloor=!!x?.hard_floor;
   let label="LEARNING",rank=2;
   if(n>=3&&(npc>=1||strongRate>=.25||hitRate>=.45)){label="HOT";rank=4}
   else if(n>=3&&(strongRate>=.10||hitRate>=.18)){label="WARM";rank=3}
   else if(n>=6&&hitRate<.08&&(s.consecutiveMisses||0)>=4){label="COLD";rank=1}
+  if(hardFloor&&rank<3){label="WARM";rank=3}
   if(currentHit){label="HOT";rank=5}
-  return{label,rank,n,hits,strong,npc,hitRate,strongRate};
+  return{label,rank,n,hits,strong,npc,hitRate,strongRate,hardFloor};
 }
 
 async function appStatus(){
@@ -224,23 +225,26 @@ function hiddenNextDue(id){
   if(!x||!c)return 0;
   const delay=Math.max(1,Number(x.cache_delay||30))*1000,cacheTs=Number(x.cache_timestamp||0)*1000;
   if(cacheTs&&now<cacheTs+delay)return cacheTs+delay+250;
-  const pending=Number(c.requestsSinceChange||0)>0;
+  const pending=Number(c.requestsSinceChange||0)>0,hardFloor=!!x.hard_floor;
   const pendingIntervals={5:4000,4:5000,3:8000,2:11000,1:15000};
   const normalIntervals={5:6000,4:8000,3:14000,2:22000,1:35000};
-  const gap=(pending?pendingIntervals:normalIntervals)[p.rank]||12000;
-  return Math.min(Number(s.lastRequestAt||0)+gap,Number(s.lastRequestAt||0)+45000);
+  let gap=(pending?pendingIntervals:normalIntervals)[p.rank]||12000;
+  if(hardFloor)gap=Math.min(gap,pending?7000:12000);
+  const maxGap=hardFloor?20000:45000;
+  return Math.min(Number(s.lastRequestAt||0)+gap,Number(s.lastRequestAt||0)+maxGap);
 }
 function chooseNextHiddenId(){
   if(!discoveryIds.length)return null;
   const now=Date.now();let best=null,bestScore=-Infinity;
   for(const rawId of discoveryIds){
     const id=Number(rawId),x=hiddenResults.get(id),s=hiddenStat(id),p=hiddenPriorityInfo(id,x),due=hiddenNextDue(id);
-    const since=now-Number(s.lastRequestAt||0);
+    const since=now-Number(s.lastRequestAt||0),hardFloor=!!x?.hard_floor,maxWait=hardFloor?20000:45000;
     if(!x){return id}
-    if(now<due&&since<45000)continue;
-    const overdue=Math.max(0,(now-due)/1000),starve=Math.max(0,(since-30000)/1000);
+    if(now<due&&since<maxWait)continue;
+    const overdue=Math.max(0,(now-due)/1000),starve=Math.max(0,(since-(hardFloor?12000:30000))/1000);
     const currentBonus=isStrongHiddenHit(x)?30:isHiddenHit(x)?18:0;
-    const score=p.rank*20+overdue+starve*2+currentBonus;
+    const floorBonus=hardFloor?28:0;
+    const score=p.rank*20+overdue+starve*2+currentBonus+floorBonus;
     if(score>bestScore){bestScore=score;best=id}
   }
   return best;
@@ -249,7 +253,7 @@ function updateHiddenSchedulerStatus(nextId=null){
   if(!discoverRunning)return;
   const hot=discoveryIds.filter(id=>hiddenPriorityInfo(id,hiddenResults.get(Number(id))).label==="HOT").length;
   $("discoverState").textContent=`● Adaptive Hidden scan · ${hot} hot item${hot===1?"":"s"}`;$("discoverState").className="status-dot live";
-  if(nextId){const x=hiddenResults.get(Number(nextId)),p=hiddenPriorityInfo(nextId,x);$("discoverNext").textContent=`Next priority: ${x?.name||`Item ${nextId}`} · ${p.label}`}
+  if(nextId){const x=hiddenResults.get(Number(nextId)),p=hiddenPriorityInfo(nextId,x);$("discoverNext").textContent=`Next priority: ${x?.name||`Item ${nextId}`} · ${p.label}${x?.hard_floor?" · NPC floor protected":""}`}
   else $("discoverNext").textContent="Waiting for the next useful cache window…";
 }
 async function runDiscoveryScheduler(){
@@ -272,7 +276,7 @@ function toggleDiscoverAuto(){
   discoverRunning=true;discoverBatchIndex=0;
   $("discoverAutoBtn").textContent="Stop Adaptive Hidden Scan";$("discoverAutoBtn").classList.remove("secondary");
   $("discoverState").textContent="● Adaptive Hidden scan · learning priorities";$("discoverState").className="status-dot live";
-  $("discoverNext").textContent="Hot markets will be revisited first; cold markets still have a 45s anti-starvation check.";
+  $("discoverNext").textContent="NPC-floor items stay prioritized; other cold markets still have a 45s anti-starvation check.";
   $("discoverProgress").style.width="0%";
   runDiscoveryScheduler();
 }
