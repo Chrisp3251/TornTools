@@ -17,8 +17,8 @@
     <span id="status" class="pill">Checking…</span>
   </header>
 
-  <section class="panel">
-    <div class="section-head"><div><h2>API Key</h2><p class="muted">Your Torn API key can load automatically from your local .env file.</p></div></div>
+  <section id="apiPanel" class="panel" hidden>
+    <div class="section-head"><div><h2>API Key</h2><p class="muted">A key is only needed here if TornTools did not find one in your local .env file.</p></div></div>
     <div class="row">
       <input id="key" type="password" autocomplete="off" placeholder="Paste your limited Torn API key">
       <button id="loadKeyBtn" onclick="loadKey()">Load Key</button>
@@ -51,8 +51,8 @@
   </section>
 
   <section class="panel">
-    <div class="section-head"><div><h2>Current Market</h2><p class="muted">Green means it meets your buy settings. Gray means keep watching.</p></div></div>
-    <div id="cards" class="cards"><div class="empty">Load your API key, choose what to watch, then scan.</div></div>
+    <div class="section-head"><div><h2>Main Watchlist</h2><p class="muted">Your Xanax/eDVD/resale watch items appear here after a scan.</p></div></div>
+    <div id="cards" class="cards"><div class="empty">Ready to scan. Choose what you want to watch above and click Scan Now or Start Auto Scan.</div></div>
   </section>
 
   <section class="panel">
@@ -104,5 +104,20 @@
   <section class="notice"><strong>Read-only:</strong> TornTools finds opportunities and opens the market for you. It never buys or sells automatically.</section>
 </main>
 <script src="/static/app.js"></script>
+<script>
+  async function syncApiPanelVisibility() {
+    const panel = document.getElementById('apiPanel');
+    if (!panel) return;
+    try {
+      const response = await fetch('/api/status');
+      const data = await response.json();
+      panel.hidden = !!data.key_loaded;
+    } catch {
+      panel.hidden = true;
+    }
+  }
+  syncApiPanelVisibility();
+  setInterval(syncApiPanelVisibility, 2000);
+</script>
 </body>
 </html>
