@@ -30,7 +30,7 @@ def load_local_env_key():
     except OSError:return None
     return None
 
-app=FastAPI(title="TornTools Local Scanner",version="0.5.0"); app.mount("/static",StaticFiles(directory=WEB),name="static")
+app=FastAPI(title="TornTools Local Scanner",version="0.5.1"); app.mount("/static",StaticFiles(directory=WEB),name="static")
 _api_key:str|None=load_local_env_key(); _last_scan:dict[str,Any]|None=None
 class KeyPayload(BaseModel): api_key:str
 
@@ -39,13 +39,16 @@ def init_db():
         c.execute("""CREATE TABLE IF NOT EXISTS market_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT,ts REAL NOT NULL,item_id INTEGER NOT NULL,lowest INTEGER,qty_floor INTEGER,next_higher INTEGER,average_price INTEGER,listing_count INTEGER,listing_ids TEXT NOT NULL,total_top_qty INTEGER NOT NULL)""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_market_snapshots_item_ts ON market_snapshots(item_id,ts)")
 init_db()
+
 def market_url(i): return f"https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID={i}&sortField=price&sortOrder=ASC"
+
 def torn_error(d):
     if not isinstance(d,dict) or not d.get("error"): return None
     e=d["error"]
     if isinstance(e,dict):
         code=e.get("code"); msg=e.get("error") or e.get("message") or str(e); return f"Torn API error {code}: {msg}" if code is not None else msg
     return str(e)
+
 def parse_itemmarket(d):
     m=d.get("itemmarket") if isinstance(d,dict) else None
     if not isinstance(m,dict): return [],None
@@ -95,13 +98,68 @@ async def fetch_market(client,i,limit=100):
     if r.status_code>=400: raise HTTPException(r.status_code,f"Torn API returned HTTP {r.status_code}")
     return d
 
+async def fetch_inventory(client):
+    if not _api_key: raise HTTPException(401,"Load your Torn API key first")
+    try:
+        r=await client.get(f"{API_BASE}/user/inventory",headers={"Authorization":f"ApiKey {_api_key}"}); d=r.json()
+    except httpx.RequestError as e: raise HTTPException(502,f"Could not reach Torn API: {e}") from e
+    except ValueError as e: raise HTTPException(502,"Torn API returned unreadable inventory data") from e
+    err=torn_error(d)
+    if err: raise HTTPException(400,err)
+    if r.status_code>=400: raise HTTPException(r.status_code,f"Torn API returned HTTP {r.status_code}")
+    return d
+
+def _num(v):
+    try:return float(v) if v is not None else None
+    except (TypeError,ValueError):return None
+
+def normalize_inventory(d):
+    root=d.get("inventory") if isinstance(d,dict) else None
+    entries=[]
+    if isinstance(root,list): entries=root
+    elif isinstance(root,dict):
+        for value in root.values():
+            if isinstance(value,list): entries.extend(value)
+    out=[]
+    for e in entries:
+        if not isinstance(e,dict): continue
+        item=e.get("item") if isinstance(e.get("item"),dict) else {}
+        details=e.get("item_details") if isinstance(e.get("item_details"),dict) else {}
+        if not details and isinstance(e.get("details"),dict): details=e.get("details")
+        stats=details.get("stats") if isinstance(details.get("stats"),dict) else {}
+        if not stats and isinstance(e.get("stats"),dict): stats=e.get("stats")
+        if not stats and isinstance(item.get("stats"),dict): stats=item.get("stats")
+        item_id=item.get("id") or e.get("item_id") or e.get("itemID")
+        try:item_id=int(item_id)
+        except (TypeError,ValueError):continue
+        quality=_num(stats.get("quality")); damage=_num(stats.get("damage")); accuracy=_num(stats.get("accuracy")); armor=_num(stats.get("armor"))
+        if quality is None and damage is None and accuracy is None and armor is None: continue
+        bonuses=details.get("bonuses") or e.get("bonuses") or []
+        rarity=details.get("rarity") or e.get("rarity")
+        uid=details.get("uid") or e.get("uid") or e.get("unique_id") or e.get("ID")
+        out.append({
+            "item_id":item_id,
+            "name":item.get("name") or e.get("name") or f"Item {item_id}",
+            "type":item.get("type") or e.get("type"),
+            "uid":uid,
+            "quality":quality,"damage":damage,"accuracy":accuracy,"armor":armor,
+            "rarity":rarity,"bonuses":bonuses,
+            "equipped":bool(e.get("equipped") or e.get("is_equipped")),
+            "plain":not bool(rarity or bonuses),
+            "market_url":market_url(item_id)
+        })
+    out.sort(key=lambda x:(not x["plain"],x["name"].lower(),-(x["quality"] or 0)))
+    return out
+
 def floor_data(listings):
     if not listings:return None,None,None
     low=listings[0]["price"]; qty=sum(x["amount"] for x in listings if x["price"]==low); nxt=next((x["price"] for x in listings if x["price"]>low),None); return low,qty,nxt
+
 def save_snapshot(i,listings,avg):
     if not listings:return
     low,qty,nxt=floor_data(listings); top=listings[:30]; ids=[str(x["id"]) for x in top if x.get("id") is not None]; total=sum(x["amount"] for x in top)
     with sqlite3.connect(DB_PATH) as c:c.execute("INSERT INTO market_snapshots(ts,item_id,lowest,qty_floor,next_higher,average_price,listing_count,listing_ids,total_top_qty) VALUES(?,?,?,?,?,?,?,?,?)",(time.time(),i,low,qty,nxt,avg,len(listings),json.dumps(ids),total))
+
 def liquidity_stats(i):
     with sqlite3.connect(DB_PATH) as c: rows=c.execute("SELECT ts,lowest,qty_floor,next_higher,average_price,listing_count,listing_ids,total_top_qty FROM market_snapshots WHERE item_id=? ORDER BY ts DESC LIMIT 120",(i,)).fetchall()
     if not rows:return {"observations":0,"score":0,"label":"Learning","gap_events":0,"largest_gap_pct":0}
@@ -116,6 +174,7 @@ def liquidity_stats(i):
     n=max(1,len(rows)-1); score=round(min(100,(changes/n)*65+(floors/n)*35)*100)/100
     label="Learning" if len(rows)<4 else "Very active" if score>=70 else "Active" if score>=45 else "Moderate" if score>=20 else "Slow"
     return {"observations":len(rows),"score":score,"label":label,"gap_events":gaps,"largest_gap_pct":round(largest,2),"last_seen":rows[-1][0]}
+
 def analyze_main(i,listings,avg):
     meta=ITEMS[i]
     if not listings:return {"id":i,**meta,"market_url":market_url(i),"error":"No readable listings returned"}
@@ -123,6 +182,7 @@ def analyze_main(i,listings,avg):
     if nxt:
         each=int(nxt*(1-MARKET_FEE))-low; roi=each/low*100; profit=each*qty
     return {"id":i,**meta,"lowest":low,"qty_floor":qty,"next_higher":nxt,"reference":ref,"average_price":avg,"discount_pct":disc,"net_roi_after_fee":roi,"floor_clear_capital":low*qty,"floor_clear_profit_after_fee":profit,"market_url":market_url(i)}
+
 def discovery_result(i,meta,listings,avg,cache=None):
     if not listings:return {"id":i,"name":meta["name"],"error":"No listings","market_url":market_url(i),**(cache or {})}
     low,qty,_=floor_data(listings); floor=meta.get("hard_floor"); ref=avg or low; disc=(ref-low)/ref*100 if ref else 0
@@ -171,8 +231,7 @@ def equipment_verdict(rows,quality,damage,accuracy,armor,vendor_sell):
     confidence="HIGH" if close_count>=5 else "MEDIUM" if close_count>=3 else "LOW"
     threshold=max(1000,int(vendor_sell*.25))
     if not rows:
-        verdict="DON'T VENDOR YET" if quality>=65 else "CHECK MANUALLY"
-        reason="No plain market comparables were returned."
+        verdict="DON'T VENDOR YET" if quality>=65 else "CHECK MANUALLY"; reason="No plain market comparables were returned."
     elif premium is not None and premium>=threshold:
         verdict="MARKET IT"; reason=f"A competitive comparable ask would net about ${premium:,} more than vendoring after the 5% fee."
     elif quality>=80:
@@ -185,18 +244,22 @@ def equipment_verdict(rows,quality,damage,accuracy,armor,vendor_sell):
 
 @app.get("/")
 async def home():return FileResponse(WEB/"index.html")
+
 @app.get("/api/status")
-async def status():return {"ok":True,"version":"0.5.0","key_loaded":bool(_api_key),"key_source":"local .env / environment" if _api_key else None,"market_fee_pct":5,"items":[{"id":i,**m} for i,m in ITEMS.items()],"discovery_count":len(DISCOVERY_ITEMS),"discovery_ids":list(DISCOVERY_ITEMS)}
+async def status():return {"ok":True,"version":"0.5.1","key_loaded":bool(_api_key),"key_source":"local .env / environment" if _api_key else None,"market_fee_pct":5,"items":[{"id":i,**m} for i,m in ITEMS.items()],"discovery_count":len(DISCOVERY_ITEMS),"discovery_ids":list(DISCOVERY_ITEMS)}
+
 @app.post("/api/key")
 async def set_key(p:KeyPayload):
     global _api_key
     k=p.api_key.strip()
     if not k:raise HTTPException(400,"API key is blank")
     _api_key=k;return {"ok":True,"message":"API key loaded into memory."}
+
 @app.delete("/api/key")
 async def forget_key():
     global _api_key,_last_scan
     _api_key=None;_last_scan=None;return {"ok":True}
+
 @app.get("/api/scan")
 async def scan(ids:str=Query(default="206,366,370")):
     global _last_scan
@@ -212,6 +275,7 @@ async def scan(ids:str=Query(default="206,366,370")):
         if isinstance(r,Exception):out.append({"id":i,**ITEMS[i],"error":str(getattr(r,"detail",r))});continue
         l,a=parse_itemmarket(r);out.append(analyze_main(i,l,a))
     _last_scan={"ok":True,"scanned_at":time.time(),"items":out};return _last_scan
+
 @app.post("/api/learn")
 async def learn_markets():
     ids=list(LEARN_ITEMS)
@@ -221,6 +285,7 @@ async def learn_markets():
         if isinstance(r,Exception):out.append({"id":i,"name":LEARN_ITEMS[i],"error":str(getattr(r,"detail",r))});continue
         l,a=parse_itemmarket(r);save_snapshot(i,l,a);out.append({"id":i,"name":LEARN_ITEMS[i],"lowest":l[0]["price"] if l else None,"average_price":a,"market_url":market_url(i),**liquidity_stats(i)})
     out.sort(key=lambda x:(x.get("score",-1),x.get("gap_events",-1)),reverse=True);return {"ok":True,"learned_at":time.time(),"items":out}
+
 @app.get("/api/liquidity")
 async def get_liquidity():
     out=[]
@@ -230,6 +295,7 @@ async def get_liquidity():
             low=last[0] if last else None; avg=last[1] if last else None
             out.append({"id":i,"name":n,"lowest":low,"average_price":avg,"market_url":market_url(i),**liquidity_stats(i)})
     out.sort(key=lambda x:x.get("score",-1),reverse=True);return {"ok":True,"items":out}
+
 @app.post("/api/discover")
 async def discover_hidden_deals(ids:str=Query(default="")):
     if ids.strip():
@@ -248,6 +314,12 @@ async def discover_hidden_deals(ids:str=Query(default="")):
         if isinstance(r,Exception):out.append({"id":i,"name":meta["name"],"error":str(getattr(r,"detail",r))});continue
         l,a=parse_itemmarket(r); cache=market_cache_meta(r); save_snapshot(i,l,a); out.append(discovery_result(i,meta,l,a,cache))
     out.sort(key=lambda x:x.get("deal_score",-1),reverse=True);return {"ok":True,"scanned_at":time.time(),"items":out,"batch_ids":requested,"pool_count":len(DISCOVERY_ITEMS)}
+
+@app.get("/api/equipment/inventory")
+async def equipment_inventory():
+    async with httpx.AsyncClient(timeout=20) as client: d=await fetch_inventory(client)
+    items=normalize_inventory(d)
+    return {"ok":True,"items":items,"count":len(items)}
 
 @app.get("/api/equipment/check")
 async def check_equipment(item_id:int,quality:float,damage:float|None=None,accuracy:float|None=None,armor:float|None=None,vendor_sell:int=0):
