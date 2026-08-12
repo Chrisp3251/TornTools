@@ -12,7 +12,7 @@
     <div>
       <div class="eyebrow">LOCAL MARKET TOOL</div>
       <h1>TornTools Market Scanner</h1>
-      <p>V0.2 · stock-up + arbitrage dashboard</p>
+      <p>Find good buys for personal use or resale.</p>
     </div>
     <span id="status" class="pill">Checking…</span>
   </header>
@@ -20,12 +20,12 @@
   <section class="panel">
     <div class="section-head">
       <div>
-        <h2>API Connection</h2>
-        <p class="muted">Your limited Torn API key stays in backend memory only.</p>
+        <h2>API Key</h2>
+        <p class="muted">Your Torn API key stays in memory while the app is running.</p>
       </div>
     </div>
     <div class="row">
-      <input id="key" type="password" autocomplete="off" placeholder="Paste a fresh LIMITED Torn API key">
+      <input id="key" type="password" autocomplete="off" placeholder="Paste your limited Torn API key">
       <button id="loadKeyBtn" onclick="loadKey()">Load Key</button>
       <button class="secondary" onclick="forgetKey()">Forget</button>
     </div>
@@ -35,13 +35,13 @@
   <section class="panel controls">
     <div class="section-head">
       <div>
-        <h2>Scanner Controls</h2>
-        <p class="muted">Stock-up items look for discounts. Flip items look for resale spread after the 5% market fee.</p>
+        <h2>Scanner</h2>
+        <p class="muted">Personal-use items alert when they are cheap. Resale items alert when the estimated profit is worth it.</p>
       </div>
     </div>
 
     <div class="control-grid">
-      <label>Scan interval
+      <label>Check every
         <select id="interval">
           <option value="15">15 sec</option>
           <option value="30" selected>30 sec</option>
@@ -49,13 +49,13 @@
           <option value="120">2 min</option>
         </select>
       </label>
-      <label>Min flip profit
+      <label>Minimum profit
         <input id="minProfit" type="number" min="0" step="10000" value="125000">
       </label>
-      <label>Min flip ROI
+      <label>Minimum ROI
         <input id="minRoi" type="number" min="0" step="0.5" value="6">
       </label>
-      <label>Stock-up discount
+      <label>Personal-use discount
         <input id="stockDiscount" type="number" min="0" step="0.5" value="2.5">
       </label>
     </div>
@@ -65,7 +65,7 @@
     <div class="toolbar">
       <button id="scanBtn" onclick="scanNow()">Scan Now</button>
       <button id="autoBtn" class="secondary" onclick="toggleAuto()">Start Auto Scan</button>
-      <label class="check"><input id="sound" type="checkbox"> Sound only for strong deals</label>
+      <label class="check"><input id="sound" type="checkbox"> Sound for good buys</label>
       <div class="spacer"></div>
       <span id="lastUpdated" class="muted">Not scanned yet</span>
     </div>
@@ -75,15 +75,15 @@
     <article class="summary-card">
       <span>Watching</span>
       <strong id="watchingCount">0</strong>
-      <small>items enabled</small>
+      <small>items</small>
     </article>
     <article class="summary-card">
-      <span>Deals now</span>
+      <span>Good buys</span>
       <strong id="dealCount">0</strong>
-      <small>meeting your thresholds</small>
+      <small>meeting your settings</small>
     </article>
     <article class="summary-card">
-      <span>Best current opportunity</span>
+      <span>Best buy right now</span>
       <strong id="bestDeal">—</strong>
       <small id="bestDealSub">Nothing scanned yet</small>
     </article>
@@ -92,8 +92,8 @@
   <section class="panel">
     <div class="section-head">
       <div>
-        <h2>Live Opportunities</h2>
-        <p class="muted">Green cards meet your current thresholds. Gray cards are informational only.</p>
+        <h2>Current Market</h2>
+        <p class="muted">Green means it meets your buy settings. Gray means keep watching.</p>
       </div>
     </div>
     <div id="cards" class="cards">
@@ -102,7 +102,7 @@
   </section>
 
   <section class="notice">
-    <strong>V0.2 behavior:</strong> read-only market analysis only. It does not buy, list, trade, or perform any Torn action for you.
+    <strong>Read-only:</strong> TornTools finds opportunities and opens the market for you. It never buys or sells automatically.
   </section>
 </main>
 <script src="/static/app.js"></script>
