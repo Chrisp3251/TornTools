@@ -31,7 +31,7 @@ def load_local_env_key():
     except OSError:return None
     return None
 
-app=FastAPI(title="TornTools Local Scanner",version="0.5.4"); app.mount("/static",StaticFiles(directory=WEB),name="static")
+app=FastAPI(title="TornTools Local Scanner",version="0.5.5"); app.mount("/static",StaticFiles(directory=WEB),name="static")
 _api_key:str|None=load_local_env_key(); _last_scan:dict[str,Any]|None=None
 _item_value_cache={}
 class KeyPayload(BaseModel): api_key:str
@@ -202,6 +202,32 @@ def equipment_rows(d):
         out.append({"price":price,"quality":quality,"damage":_num(stats.get("damage")),"accuracy":_num(stats.get("accuracy")),"armor":_num(stats.get("armor"))})
     return out,meta
 
+def _conservative_price(values):
+    values=sorted(int(v) for v in values if v and v>0)
+    if not values:return None
+    # Lower quartile of asks is intentionally conservative: it avoids valuing a roll from one optimistic seller.
+    return values[int((len(values)-1)*0.25)]
+
+def _monotonic_quality_ask(rows,quality):
+    """Build a smoothed non-decreasing ask curve from 5-point quality neighborhoods."""
+    anchors=[]
+    for center in range(0,101,5):
+        nearby=[r["price"] for r in rows if abs(r["quality"]-center)<=5]
+        if len(nearby)<3:continue
+        anchors.append([float(center),_conservative_price(nearby),len(nearby)])
+    if not anchors:return None,0
+    running=0
+    for a in anchors:
+        running=max(running,a[1]); a[1]=running
+    lower=[a for a in anchors if a[0]<=quality]
+    upper=[a for a in anchors if a[0]>=quality]
+    if lower and upper:
+        lo=lower[-1]; hi=upper[0]
+        if hi[0]==lo[0]:return int(lo[1]),lo[2]
+        ratio=(quality-lo[0])/(hi[0]-lo[0]); return int(lo[1]+(hi[1]-lo[1])*ratio),min(lo[2],hi[2])
+    a=lower[-1] if lower else upper[0]
+    return int(a[1]),a[2]
+
 def equipment_verdict(rows,quality,damage,accuracy,armor,vendor_sell):
     def distance(r):
         score=abs(r["quality"]-quality)
@@ -209,21 +235,38 @@ def equipment_verdict(rows,quality,damage,accuracy,armor,vendor_sell):
         if accuracy is not None and r["accuracy"] is not None:score+=1.5*abs(r["accuracy"]-accuracy)
         if armor is not None and r["armor"] is not None:score+=2.0*abs(r["armor"]-armor)
         return score
-    ranked=sorted(rows,key=distance); close5=[r for r in ranked if abs(r["quality"]-quality)<=5][:8]; comps=close5 if len(close5)>=3 else ranked[:8]; chosen=comps[:5]
-    prices=sorted(r["price"] for r in chosen); median_ask=int(statistics.median(prices)) if prices else None; competitive_ask=prices[1] if len(prices)>=2 else (prices[0] if prices else None)
-    net=int(competitive_ask*(1-MARKET_FEE)) if competitive_ask else None; premium=(net-vendor_sell) if net is not None else None
-    percentile=round(sum(1 for r in rows if r["quality"]<quality)/len(rows)*100,1) if rows else None; close_count=len(close5); confidence="HIGH" if close_count>=5 else "MEDIUM" if close_count>=3 else "LOW"; threshold=max(1000,int(vendor_sell*.25))
-    if not rows:verdict="DON'T VENDOR YET" if quality>=65 else "CHECK MANUALLY"; reason="No plain market comparables were returned."
-    elif premium is not None and premium>=threshold:verdict="MARKET IT"; reason=f"A competitive comparable ask would net about ${premium:,} more than vendoring after the 5% fee."
-    elif quality>=80:verdict="DON'T VENDOR YET"; reason="This is an unusually high-quality roll; the current comparable asks do not justify an instant vendor decision."
-    elif quality>=65 and premium is not None and premium>0:verdict="MARKET IT"; reason="Above-average quality plus current comparable asks gives it a positive premium over vendoring."
-    else:verdict="VENDOR"; reason="Current plain comparable asks do not show enough premium over the guaranteed vendor value."
-    return {"verdict":verdict,"reason":reason,"quality_percentile":percentile,"confidence":confidence,"plain_listings":len(rows),"close_comparables":close_count,"median_ask":median_ask,"competitive_ask":competitive_ask,"net_after_fee":net,"premium_over_vendor":premium,"comps":chosen}
+    ranked=sorted(rows,key=distance)
+    close5=[r for r in ranked if abs(r["quality"]-quality)<=5][:10]
+    comps=close5 if len(close5)>=4 else ranked[:10]
+    chosen=comps[:6]
+    prices=sorted(r["price"] for r in chosen)
+    median_ask=int(statistics.median(prices)) if prices else None
+    raw_ask=_conservative_price(prices)
+    smooth_ask,smooth_support=_monotonic_quality_ask(rows,quality)
+    competitive_ask=smooth_ask if smooth_ask is not None else raw_ask
+    net=int(competitive_ask*(1-MARKET_FEE)) if competitive_ask else None
+    premium=(net-vendor_sell) if net is not None else None
+    percentile=round(sum(1 for r in rows if r["quality"]<quality)/len(rows)*100,1) if rows else None
+    close_count=len(close5)
+    confidence="HIGH" if smooth_support>=7 and close_count>=5 else "MEDIUM" if smooth_support>=3 or close_count>=4 else "LOW"
+    # Listing friction should scale with item value. A flat $1,000 hurdle made cheap gear effectively impossible to market.
+    threshold=max(250,int(vendor_sell*.20))
+    if not rows:
+        verdict="DON'T VENDOR YET" if quality>=65 else "CHECK MANUALLY"; reason="No plain market comparables were returned."
+    elif competitive_ask is None:
+        verdict="CHECK MANUALLY"; reason="There were not enough usable plain listings to estimate a stable market price."
+    elif premium is not None and premium>=threshold:
+        verdict="MARKET IT"; reason=f"The smoothed quality-adjusted market estimate would net about ${premium:,} more than vendoring after the 5% fee."
+    elif quality>=80 and (premium is None or premium>-threshold):
+        verdict="DON'T VENDOR YET"; reason="This is an unusually high-quality roll; the market sample does not justify an instant vendor decision."
+    else:
+        verdict="VENDOR"; reason=f"The smoothed market estimate does not clear the ${threshold:,} minimum premium needed to justify listing instead of taking the guaranteed vendor value."
+    return {"verdict":verdict,"reason":reason,"quality_percentile":percentile,"confidence":confidence,"plain_listings":len(rows),"close_comparables":close_count,"median_ask":median_ask,"competitive_ask":competitive_ask,"raw_local_ask":raw_ask,"pricing_model":"smoothed_monotonic_quality_v1","minimum_listing_premium":threshold,"net_after_fee":net,"premium_over_vendor":premium,"comps":chosen}
 
 @app.get("/")
 async def home():return FileResponse(WEB/"index.html")
 @app.get("/api/status")
-async def status():return {"ok":True,"version":"0.5.4","key_loaded":bool(_api_key),"key_source":"local .env / environment" if _api_key else None,"market_fee_pct":5,"items":[{"id":i,**m} for i,m in ITEMS.items()],"discovery_count":len(DISCOVERY_ITEMS),"discovery_ids":list(DISCOVERY_ITEMS)}
+async def status():return {"ok":True,"version":"0.5.5","key_loaded":bool(_api_key),"key_source":"local .env / environment" if _api_key else None,"market_fee_pct":5,"items":[{"id":i,**m} for i,m in ITEMS.items()],"discovery_count":len(DISCOVERY_ITEMS),"discovery_ids":list(DISCOVERY_ITEMS)}
 @app.post("/api/key")
 async def set_key(p:KeyPayload):
     global _api_key
