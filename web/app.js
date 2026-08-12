@@ -114,13 +114,13 @@ function isDeal(item) {
   const minRoi = Number(document.getElementById("minRoi").value || 0);
   const stockDiscount = Number(document.getElementById("stockDiscount").value || 0);
   if (item.mode === "stock") return Number(item.discount_pct || 0) >= stockDiscount;
-  return Number(item.net_profit_after_fee || 0) >= minProfit && Number(item.net_roi_after_fee || 0) >= minRoi;
+  return Number(item.floor_clear_profit_after_fee || 0) >= minProfit && Number(item.net_roi_after_fee || 0) >= minRoi;
 }
 
 function score(item) {
   if (item.error) return -999;
   if (item.mode === "stock") return Number(item.discount_pct || 0) * 10;
-  return Math.max(0, Number(item.net_roi_after_fee || 0) * 8 + Number(item.net_profit_after_fee || 0) / 50000);
+  return Math.max(0, Number(item.net_roi_after_fee || 0) * 8 + Number(item.floor_clear_profit_after_fee || 0) / 50000);
 }
 
 function card(item) {
@@ -131,7 +131,7 @@ function card(item) {
   const stock = item.mode === "stock";
   const headline = stock
     ? `${Number(item.discount_pct || 0).toFixed(2)}% below local reference`
-    : `${money.format(item.net_profit_after_fee || 0)} theoretical net`;
+    : `${money.format(item.floor_clear_profit_after_fee || 0)} floor-clear net`;
   const sub = stock
     ? `Reference ${money.format(item.reference)} · useful to keep rather than resell`
     : `${Number(item.net_roi_after_fee || 0).toFixed(2)}% after 5% market fee`;
@@ -147,9 +147,10 @@ function card(item) {
       <div class="hero-price">${money.format(item.lowest)}</div>
       <div class="hero-sub">${item.qty_floor} item(s) at floor</div>
       <div class="metric-list">
-        <div><span>${stock ? "Discount" : "Net profit"}</span><strong>${headline}</strong></div>
+        <div><span>${stock ? "Discount" : "Floor-clear profit"}</span><strong>${headline}</strong></div>
         <div><span>${stock ? "Context" : "Net ROI"}</span><strong>${sub}</strong></div>
         <div><span>Next higher</span><strong>${item.next_higher ? money.format(item.next_higher) : "—"}</strong></div>
+        ${stock ? "" : `<div><span>Capital to clear floor</span><strong>${money.format(item.floor_clear_capital || 0)}</strong></div>`}
       </div>
       <button class="open-market" onclick="window.open('${item.market_url}','_blank','noopener')">Open ${item.name} Market</button>
     </article>
@@ -185,7 +186,7 @@ function renderScan(data) {
     document.getElementById("bestDeal").textContent = best.name;
     document.getElementById("bestDealSub").textContent = best.mode === "stock"
       ? `${best.discount_pct.toFixed(2)}% below local reference`
-      : `${money.format(best.net_profit_after_fee)} · ${best.net_roi_after_fee.toFixed(2)}% ROI`;
+      : `${money.format(best.floor_clear_profit_after_fee)} · ${best.net_roi_after_fee.toFixed(2)}% ROI`;
   } else {
     document.getElementById("bestDeal").textContent = "None";
     document.getElementById("bestDealSub").textContent = "No item meets your thresholds right now";
