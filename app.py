@@ -106,27 +106,30 @@ def analyze_item(item_id: int, listings: list[dict]) -> dict:
     qty_floor = sum(x["amount"] for x in listings if x["price"] == lowest)
     next_higher = next((x["price"] for x in listings if x["price"] > lowest), None)
 
-    # A local reference price: median of the first 20 individual listing prices.
+    # Local reference price for stock-up deals: median of the first 20 listing prices.
     reference_prices = [x["price"] for x in listings[:20]]
     reference = int(statistics.median(reference_prices)) if reference_prices else lowest
     discount_pct = ((reference - lowest) / reference * 100) if reference else 0.0
 
     gross_gap = None
-    net_exit = None
-    net_profit = None
+    net_exit_each = None
+    net_profit_each = None
     net_roi = None
+    floor_clear_capital = lowest * qty_floor
+    floor_clear_profit = None
+
     if next_higher is not None:
         gross_gap = next_higher - lowest
-        net_exit = int(next_higher * (1 - MARKET_FEE))
-        net_profit = net_exit - lowest
-        net_roi = (net_profit / lowest) * 100
+        net_exit_each = int(next_higher * (1 - MARKET_FEE))
+        net_profit_each = net_exit_each - lowest
+        net_roi = (net_profit_each / lowest) * 100
+        floor_clear_profit = net_profit_each * qty_floor
 
-    # Conservative opportunity classifications. Frontend settings decide whether to alert.
     if meta["mode"] == "stock":
         opportunity_type = "stock_deal" if discount_pct > 0 else "normal"
         opportunity_value = discount_pct
     else:
-        opportunity_type = "flip" if (net_profit or 0) > 0 else "normal"
+        opportunity_type = "flip" if (floor_clear_profit or 0) > 0 else "normal"
         opportunity_value = net_roi or 0.0
 
     return {
@@ -138,9 +141,11 @@ def analyze_item(item_id: int, listings: list[dict]) -> dict:
         "reference": reference,
         "discount_pct": discount_pct,
         "gross_gap": gross_gap,
-        "net_exit_after_fee": net_exit,
-        "net_profit_after_fee": net_profit,
+        "net_exit_each_after_fee": net_exit_each,
+        "net_profit_each_after_fee": net_profit_each,
         "net_roi_after_fee": net_roi,
+        "floor_clear_capital": floor_clear_capital,
+        "floor_clear_profit_after_fee": floor_clear_profit,
         "opportunity_type": opportunity_type,
         "opportunity_value": opportunity_value,
         "market_url": market_url(item_id),
