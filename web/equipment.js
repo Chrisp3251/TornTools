@@ -1,4 +1,6 @@
 const eqMoney = new Intl.NumberFormat("en-US", {style:"currency", currency:"USD", maximumFractionDigits:0});
+let equipmentInventoryLoaded = false;
+let equipmentInventory = [];
 
 function switchToolTab(tab) {
   const scanner = document.getElementById("scannerView");
@@ -11,6 +13,7 @@ function switchToolTab(tab) {
   scannerBtn.classList.toggle("active", !showEquipment);
   equipmentBtn.classList.toggle("active", showEquipment);
   localStorage.setItem("torntools.activeTab", showEquipment ? "equipment" : "scanner");
+  if (showEquipment && !equipmentInventoryLoaded) loadEquipmentInventory(false);
 }
 
 function eqVal(id) {
@@ -18,6 +21,75 @@ function eqVal(id) {
   if (!el || el.value.trim() === "") return null;
   const n = Number(el.value);
   return Number.isFinite(n) ? n : null;
+}
+
+function statText(i) {
+  const parts=[];
+  if (i.damage != null) parts.push(`DMG ${Number(i.damage).toFixed(2)}`);
+  if (i.accuracy != null) parts.push(`ACC ${Number(i.accuracy).toFixed(2)}`);
+  if (i.armor != null) parts.push(`ARM ${Number(i.armor).toFixed(2)}`);
+  return parts.join(" · ") || "—";
+}
+
+function renderInventory(items) {
+  const rows=document.getElementById("eqInventoryRows");
+  if (!items.length) {
+    rows.innerHTML='<tr><td colspan="6" class="muted">No equipment with individual stats was returned by Torn.</td></tr>';
+    return;
+  }
+  rows.innerHTML=items.map((i,index)=>{
+    const status=i.plain ? (i.equipped ? "PLAIN · EQUIPPED" : "PLAIN") : (i.rarity ? String(i.rarity).toUpperCase() : "BONUSED/RW");
+    const rowClass=i.plain ? "" : "mild-hit";
+    return `<tr class="${rowClass}">
+      <td><strong>${i.name}</strong><br><small class="muted">Item #${i.item_id}${i.uid?` · ${i.uid}`:""}</small></td>
+      <td>${i.quality==null?"—":`${Number(i.quality).toFixed(2)}%`}</td>
+      <td>${statText(i)}</td>
+      <td>${i.type||"—"}</td>
+      <td>${status}</td>
+      <td><button class="mini-btn" onclick="useInventoryItem(${index})">Use</button></td>
+    </tr>`;
+  }).join("");
+}
+
+async function loadEquipmentInventory(force=false) {
+  if (equipmentInventoryLoaded && !force) return;
+  const btn=document.getElementById("eqInventoryBtn");
+  const status=document.getElementById("eqInventoryStatus");
+  const rows=document.getElementById("eqInventoryRows");
+  if (btn) { btn.disabled=true; btn.textContent="Loading…"; }
+  if (status) status.textContent="Loading your Torn inventory…";
+  if (rows) rows.innerHTML='<tr><td colspan="6" class="muted">Loading equipment…</td></tr>';
+  try {
+    const r=await fetch("/api/equipment/inventory");
+    let d={};
+    try { d=await r.json(); } catch {}
+    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    equipmentInventory=d.items||[];
+    equipmentInventoryLoaded=true;
+    renderInventory(equipmentInventory);
+    if (status) status.innerHTML=`Loaded <strong>${equipmentInventory.length}</strong> equipment item(s) from your Torn inventory. Plain white items are ideal for this checker; RW/bonused items are shown but should be priced differently.`;
+  } catch(e) {
+    equipmentInventoryLoaded=false;
+    if (rows) rows.innerHTML='<tr><td colspan="6" class="muted">Inventory unavailable. Manual equipment checking still works below.</td></tr>';
+    if (status) status.innerHTML=`<span class="bad">Could not load inventory: ${e.message}</span><br><span class="muted">If Torn reports an access error, your API key likely needs the user inventory selection enabled.</span>`;
+  } finally {
+    if (btn) { btn.disabled=false; btn.textContent="Refresh Inventory"; }
+  }
+}
+
+function useInventoryItem(index) {
+  const i=equipmentInventory[index];
+  if (!i) return;
+  document.getElementById("eqItemId").value=i.item_id ?? "";
+  document.getElementById("eqQuality").value=i.quality ?? "";
+  document.getElementById("eqDamage").value=i.damage ?? "";
+  document.getElementById("eqAccuracy").value=i.accuracy ?? "";
+  document.getElementById("eqArmor").value=i.armor ?? "";
+  document.getElementById("eqVendor").value="";
+  const selected=document.getElementById("eqSelected");
+  if (selected) selected.textContent=`Selected: ${i.name} · ${i.quality==null?"quality unknown":`${Number(i.quality).toFixed(2)}% quality`}${i.plain?"":" · RW/bonused"}`;
+  document.getElementById("equipmentResult").innerHTML='<div class="empty">Stats loaded from your inventory. Enter the vendor sell value, then click Check Equipment.</div>';
+  document.getElementById("eqVendor").focus();
 }
 
 function compRow(c) {
@@ -87,7 +159,9 @@ async function checkEquipment() {
 
 function clearEquipment() {
   ["eqItemId","eqQuality","eqDamage","eqAccuracy","eqArmor","eqVendor"].forEach(id => { const el=document.getElementById(id); if(el) el.value=""; });
-  document.getElementById("equipmentResult").innerHTML = '<div class="empty">Enter an item and its stats, then check the market.</div>';
+  const selected=document.getElementById("eqSelected");
+  if (selected) selected.textContent="No inventory item selected.";
+  document.getElementById("equipmentResult").innerHTML = '<div class="empty">Choose an inventory item above or enter an item and its stats, then check the market.</div>';
 }
 
 window.addEventListener("DOMContentLoaded", () => {
