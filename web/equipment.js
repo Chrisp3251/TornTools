@@ -124,20 +124,12 @@ async function loadEquipmentInventory(force=false) {
   }
 }
 
-function equipmentParams(i,vendor=0) {
-  const params=new URLSearchParams({item_id:String(i.item_id),quality:String(i.quality),vendor_sell:String(Math.max(0,Math.trunc(vendor||0)))});
-  if (i.damage != null) params.set("damage",String(i.damage));
-  if (i.accuracy != null) params.set("accuracy",String(i.accuracy));
-  if (i.armor != null) params.set("armor",String(i.armor));
-  return params;
-}
-
 async function loadSelectedItemValues(i) {
   const el=document.getElementById("eqSelectedMarket");
   const vendorInput=document.getElementById("eqVendor");
   if (el) el.textContent="Torn values: checking…";
   try {
-    const r=await fetch(`/api/equipment/meta?item_id=${encodeURIComponent(i.item_id)}`);
+    const r=await fetch(`/api/equipment/values?item_id=${encodeURIComponent(i.item_id)}`);
     let d={}; try{d=await r.json()}catch{}
     if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
     i.vendor_sell=d.sell_price;
@@ -166,7 +158,7 @@ async function useInventoryItem(index) {
   const meta=await loadSelectedItemValues(i);
   document.getElementById("equipmentResult").innerHTML=meta
     ? '<div class="empty">Stats and Torn values loaded. Click Check Equipment.</div>'
-    : '<div class="empty">Stats loaded. Vendor value could not be fetched automatically, so enter it manually if needed.</div>';
+    : '<div class="empty">Stats loaded. Vendor value could not be fetched automatically, but Check Equipment will still try Torn values on the backend.</div>';
 }
 
 function compRow(c) {
@@ -183,19 +175,21 @@ function renderEquipmentResult(d) {
   const percentile=d.quality_percentile==null?"—":`${d.quality_percentile.toFixed(1)}th percentile`;
   const cache=d.cache||{};
   const cacheText=cache.cache_age_seconds==null?"Unknown market-cache age":`${cache.freshness} · ${cache.cache_age_seconds}s old`;
+  const selectedMarket=document.getElementById("eqSelectedMarket");
+  if (selectedMarket) selectedMarket.innerHTML=`Torn market value: <strong>${d.torn_market_price != null ? eqMoney.format(d.torn_market_price) : "—"}</strong> · Vendor/NPC sell: <strong>${d.vendor_sell != null ? eqMoney.format(d.vendor_sell) : "—"}</strong>`;
   box.innerHTML=`
     <article class="equipment-result-card ${verdictClass}">
       <div class="eq-result-head"><div><div class="eyebrow">${d.type||"EQUIPMENT"}</div><h2>${d.name}</h2><p class="muted">Item #${d.item_id} · ${cacheText}</p></div><div class="eq-verdict">${d.verdict}</div></div>
       <p class="eq-reason">${d.reason}</p>
       <div class="eq-metrics">
         <div><span>Your quality</span><strong>${Number(d.your_stats.quality).toFixed(2)}%</strong><small>${percentile} vs current plain listings</small></div>
-        <div><span>Vendor value</span><strong>${eqMoney.format(d.vendor_sell||0)}</strong><small>Torn NPC/vendor sell value</small></div>
+        <div><span>Vendor value</span><strong>${eqMoney.format(d.vendor_sell||0)}</strong><small>${d.vendor_sell_source==="torn"?"Auto-filled from Torn":"Manual override"}</small></div>
         <div><span>Competitive ask</span><strong>${d.competitive_ask?eqMoney.format(d.competitive_ask):"—"}</strong><small>Based on closest current plain listings</small></div>
         <div><span>After 5% fee</span><strong>${d.net_after_fee?eqMoney.format(d.net_after_fee):"—"}</strong><small>${d.premium_over_vendor==null?"No comparison":`${d.premium_over_vendor>=0?"+":""}${eqMoney.format(d.premium_over_vendor)} vs vendor`}</small></div>
       </div>
       <div class="research-note"><strong>Confidence: ${d.confidence}</strong> · ${d.close_comparables} close-quality comparables · ${d.plain_listings} plain listings checked. Asking prices are not confirmed sale prices.</div>
       <div class="table-wrap"><table class="research-table"><thead><tr><th>Comparable quality</th><th>Stats</th><th>Asking price</th></tr></thead><tbody>${(d.comps||[]).map(compRow).join("")||'<tr><td colspan="3">No comparable listings.</td></tr>'}</tbody></table></div>
-      <div class="toolbar eq-actions"><button onclick="window.open('${d.market_url}','_blank','noopener')">Open This Item Market</button><span class="muted">Live Item Market average: ${d.market_average?eqMoney.format(d.market_average):"—"} · Median closest ask: ${d.median_ask?eqMoney.format(d.median_ask):"—"}</span></div>
+      <div class="toolbar eq-actions"><button onclick="window.open('${d.market_url}','_blank','noopener')">Open This Item Market</button><span class="muted">Torn market value: ${d.torn_market_price!=null?eqMoney.format(d.torn_market_price):"—"} · Live Item Market average: ${d.market_average?eqMoney.format(d.market_average):"—"} · Median closest ask: ${d.median_ask?eqMoney.format(d.median_ask):"—"}</span></div>
     </article>`;
 }
 
@@ -205,11 +199,12 @@ async function checkEquipment() {
   const damage=eqVal("eqDamage");
   const accuracy=eqVal("eqAccuracy");
   const armor=eqVal("eqArmor");
-  const vendor=eqVal("eqVendor")??0;
+  const vendor=eqVal("eqVendor");
   const result=document.getElementById("equipmentResult");
   const btn=document.getElementById("eqCheckBtn");
   if (!itemId || quality==null) { result.innerHTML='<div class="empty bad">Item ID and Quality are required.</div>'; return; }
-  const params=new URLSearchParams({item_id:String(Math.trunc(itemId)),quality:String(quality),vendor_sell:String(Math.max(0,Math.trunc(vendor)))});
+  const params=new URLSearchParams({item_id:String(Math.trunc(itemId)),quality:String(quality)});
+  if (vendor!=null) params.set("vendor_sell",String(Math.max(0,Math.trunc(vendor))));
   if (damage!=null) params.set("damage",String(damage));
   if (accuracy!=null) params.set("accuracy",String(accuracy));
   if (armor!=null) params.set("armor",String(armor));
@@ -219,6 +214,7 @@ async function checkEquipment() {
     const r=await fetch(`/api/equipment/check?${params.toString()}`);
     let d={}; try{d=await r.json()}catch{}
     if (!r.ok) throw new Error(d.detail||`HTTP ${r.status}`);
+    if (document.getElementById("eqVendor") && d.vendor_sell != null) document.getElementById("eqVendor").value=String(d.vendor_sell);
     renderEquipmentResult(d);
   } catch(e) { result.innerHTML=`<div class="empty bad">${e.message}</div>`; }
   finally { btn.disabled=false; btn.textContent="Check Equipment"; }
