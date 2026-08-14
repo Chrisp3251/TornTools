@@ -2,7 +2,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Query
 from pydantic import BaseModel
 
 import mug_scout_v036
@@ -10,7 +10,7 @@ from mug_scout_v036 import app
 
 BASE = Path(__file__).resolve().parent
 DB_PATH = BASE / "torntools.sqlite3"
-MUG_RESEARCH_VERSION = "0.4.0"
+MUG_RESEARCH_VERSION = "0.4.1"
 
 
 class MugResultPayload(BaseModel):
@@ -131,6 +131,53 @@ async def record_mug_result(payload: MugResultPayload):
         result_id = cur.lastrowid
     history = mug_history_map([payload.player_id]).get(payload.player_id, {})
     return {"ok": True, "id": result_id, "history": history}
+
+
+@app.get("/api/mug-research/results")
+async def mug_research_results(limit: int = Query(250, ge=1, le=2000)):
+    with sqlite3.connect(DB_PATH) as c:
+        rows = c.execute(
+            """SELECT id,ts,player_id,player_name,amount,fair_fight,bs_estimate,inactive_days,
+                      property_name,property_ownership,property_market_price,target_score,status
+               FROM mug_results ORDER BY ts DESC LIMIT ?""",
+            (int(limit),),
+        ).fetchall()
+        summary = c.execute(
+            """SELECT COUNT(*), COALESCE(SUM(amount),0), COALESCE(AVG(amount),0), COALESCE(MAX(amount),0), COUNT(DISTINCT player_id)
+               FROM mug_results"""
+        ).fetchone()
+        targets = c.execute(
+            """SELECT player_id, COALESCE(MAX(player_name),''), COUNT(*), COALESCE(SUM(amount),0),
+                      COALESCE(AVG(amount),0), COALESCE(MAX(amount),0), MAX(ts)
+               FROM mug_results GROUP BY player_id ORDER BY SUM(amount) DESC, COUNT(*) DESC"""
+        ).fetchall()
+    return {
+        "ok": True,
+        "version": MUG_RESEARCH_VERSION,
+        "summary": {
+            "mugs": int(summary[0] or 0),
+            "total_mugged": int(summary[1] or 0),
+            "average_mug": round(float(summary[2] or 0), 2),
+            "best_mug": int(summary[3] or 0),
+            "unique_targets": int(summary[4] or 0),
+        },
+        "targets": [
+            {
+                "player_id": int(r[0]), "player_name": r[1] or f"Player {r[0]}", "mug_count": int(r[2]),
+                "total_mugged": int(r[3]), "average_mug": round(float(r[4]), 2), "best_mug": int(r[5]), "last_mug_ts": r[6],
+            }
+            for r in targets
+        ],
+        "items": [
+            {
+                "id": r[0], "ts": r[1], "player_id": r[2], "player_name": r[3] or f"Player {r[2]}",
+                "amount": r[4], "fair_fight": r[5], "bs_estimate": r[6], "inactive_days": r[7],
+                "property_name": r[8], "property_ownership": r[9], "property_market_price": r[10],
+                "target_score": r[11], "status": r[12],
+            }
+            for r in rows
+        ],
+    }
 
 
 @app.get("/api/mug-research/player/{player_id}")
