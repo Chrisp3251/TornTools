@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         TornTools Live Market Sniper
 // @namespace    http://127.0.0.1:8765/
-// @version      0.1.1
-// @description  Watches the Torn Item Market page you are actively viewing and alerts when a TornTools sniper target appears at or below your max price. Does not auto-buy.
+// @version      0.2.0
+// @description  Watches the Torn Item Market page you are actively viewing, highlights live buy candidates, and exposes a manual BUY 1 shortcut. Never auto-buys.
 // @match        https://www.torn.com/page.php*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
@@ -26,6 +26,9 @@
   let lastAlertSignature = null;
   let bestHit = null;
   let armed = true;
+  let titleTimer = null;
+  let titleFlip = false;
+  let baseTitle = document.title;
 
   function parseCurrentItemId() {
     const text = `${location.search}&${location.hash}`;
@@ -57,7 +60,7 @@
     });
   }
 
-  function recordTelemetry(target, hit, signature, rowText) {
+  function postTelemetry(target, hit, eventType, signature, metadata = {}) {
     try {
       GM_xmlhttpRequest({
         method: 'POST',
@@ -66,14 +69,18 @@
         data: JSON.stringify({
           item_id: Number(currentItemId),
           source: 'live_page',
-          event_type: 'alert',
-          price: Number(hit.price),
-          max_price: Number(target.max_price),
-          signature: `live:${signature}`,
+          event_type: eventType,
+          price: Number(hit?.price || 0) || null,
+          max_price: Number(target?.max_price || 0) || null,
+          baseline: Number(target?.learned_baseline || 0) || null,
+          edge_pct: target?.learned_baseline && hit?.price ? ((Number(target.learned_baseline)-Number(hit.price))/Number(target.learned_baseline)*100) : null,
+          signature,
           metadata: {
             page_url: location.href,
-            row_text: rowText,
-            observed_at_ms: Date.now()
+            observed_at_ms: Date.now(),
+            configured_max_price: Number(target?.configured_max_price ?? target?.max_price ?? 0) || null,
+            effective_max_price: Number(target?.effective_max_price ?? target?.max_price ?? 0) || null,
+            ...metadata
           }
         }),
         timeout: 2500
@@ -86,17 +93,39 @@
     const style = document.createElement('style');
     style.id = 'torntools-sniper-style';
     style.textContent = `
-      #${PANEL_ID}{position:fixed;right:18px;top:110px;z-index:2147483646;background:#111820;color:#eef4ff;border:1px solid #44536a;border-radius:10px;padding:10px 12px;min-width:260px;max-width:360px;font:13px/1.35 Arial,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.45)}
-      #${PANEL_ID}.hit{background:#3a0d0d;border-color:#ff5b5b;box-shadow:0 0 0 2px rgba(255,70,70,.22),0 8px 28px rgba(0,0,0,.55)}
+      @keyframes ttSniperPulse{0%,100%{box-shadow:0 0 0 2px rgba(255,70,70,.18),0 8px 28px rgba(0,0,0,.55)}50%{box-shadow:0 0 0 4px rgba(255,85,85,.9),0 0 30px rgba(255,55,55,.55),0 8px 28px rgba(0,0,0,.65)}}
+      @keyframes ttRowPulse{0%,100%{outline-color:rgba(255,65,65,.5);background:rgba(255,55,55,.10)}50%{outline-color:#ff3030;background:rgba(255,55,55,.24)}}
+      #${PANEL_ID}{position:fixed;right:18px;top:110px;z-index:2147483646;background:#111820;color:#eef4ff;border:1px solid #44536a;border-radius:10px;padding:10px 12px;min-width:280px;max-width:380px;font:13px/1.35 Arial,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.45)}
+      #${PANEL_ID}.hit{background:#3a0d0d;border-color:#ff5b5b;animation:ttSniperPulse 1.1s ease-in-out infinite}
       #${PANEL_ID} .tt-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
       #${PANEL_ID} .tt-title{font-weight:800;letter-spacing:.04em}
       #${PANEL_ID} .tt-state{font-size:11px;opacity:.8}
       #${PANEL_ID} .tt-price{font-size:22px;font-weight:900;margin:4px 0}
-      #${PANEL_ID} button{cursor:pointer;border:1px solid #60738d;border-radius:6px;background:#1f2b3a;color:#fff;padding:5px 8px;margin-top:7px}
+      #${PANEL_ID} .tt-edge{font-size:12px;opacity:.85;margin:3px 0 7px}
+      #${PANEL_ID} button{cursor:pointer;border:1px solid #60738d;border-radius:6px;background:#1f2b3a;color:#fff;padding:6px 9px;margin-top:7px;font-weight:700}
       #${PANEL_ID} button:hover{background:#2a3a4d}
-      .${HIGHLIGHT_CLASS}{outline:3px solid #ff4242 !important;outline-offset:-2px !important;background:rgba(255,55,55,.13) !important}
+      #${PANEL_ID} #tt-buy-one{background:#7b1212;border-color:#ff6666;font-size:14px;padding:8px 12px}
+      #${PANEL_ID} #tt-buy-one:hover{background:#a01818}
+      .${HIGHLIGHT_CLASS}{outline:3px solid #ff4242 !important;outline-offset:-2px !important;animation:ttRowPulse 1.1s ease-in-out infinite !important}
     `;
     document.documentElement.appendChild(style);
+  }
+
+  function updateTitlePulse() {
+    if (!bestHit) {
+      if (titleTimer) clearInterval(titleTimer);
+      titleTimer = null;
+      titleFlip = false;
+      if (baseTitle) document.title = baseTitle;
+      return;
+    }
+    if (titleTimer) return;
+    baseTitle = document.title.replace(/^🔥 BUY CANDIDATE · /, '') || document.title;
+    titleTimer = setInterval(() => {
+      if (!bestHit) { updateTitlePulse(); return; }
+      titleFlip = !titleFlip;
+      document.title = titleFlip ? `🔥 BUY CANDIDATE · ${baseTitle}` : baseTitle;
+    }, 650);
   }
 
   function renderPanel(errorText = '') {
@@ -118,12 +147,18 @@
     } else if (!target) {
       panel.innerHTML = `<div class="tt-head"><span class="tt-title">TornTools Sniper</span><span class="tt-state">${armed?'ARMED':'PAUSED'}</span></div><div>Item #${currentItemId} is not on your TornTools sniper watchlist.</div><button id="tt-toggle">${armed?'Pause':'Arm'} live watcher</button>`;
     } else if (bestHit) {
-      panel.innerHTML = `<div class="tt-head"><span class="tt-title">SNIPE NOW · ${target.name}</span><span class="tt-state">LIVE PAGE</span></div><div class="tt-price">${money(bestHit.price)}</div><div>At/below your ${money(target.max_price)} max. Click below to jump to the qualifying listing.</div><button id="tt-jump">Jump to listing</button> <button id="tt-toggle">Pause</button>`;
+      const baseline = Number(target.learned_baseline || 0);
+      const edge = baseline ? ((baseline - Number(bestHit.price)) / baseline * 100) : null;
+      const edgeText = edge == null ? '' : `<div class="tt-edge">Learned baseline ${money(baseline)} · live edge <strong>${edge.toFixed(1)}%</strong></div>`;
+      panel.innerHTML = `<div class="tt-head"><span class="tt-title">🔥 BUY CANDIDATE · ${target.name}</span><span class="tt-state">LIVE PAGE</span></div><div class="tt-price">${money(bestHit.price)}</div>${edgeText}<div>Live-safe max: <strong>${money(target.max_price)}</strong>. BUY 1 is manual and invokes only this listing's current native Buy control; Torn may still show its normal confirmation UI.</div><button id="tt-buy-one">BUY 1 · ${money(bestHit.price)}</button> <button id="tt-jump">Show listing</button> <button id="tt-toggle">Pause</button>`;
     } else {
-      panel.innerHTML = `<div class="tt-head"><span class="tt-title">${target.name}</span><span class="tt-state">${armed?'LIVE WATCH':'PAUSED'}</span></div><div>Sniper max: <strong>${money(target.max_price)}</strong></div><div style="opacity:.75;margin-top:4px">Watching the market page you already loaded. No auto-buy.</div><button id="tt-toggle">${armed?'Pause':'Arm'} live watcher</button>`;
+      const configured = Number(target.configured_max_price ?? target.max_price), effective = Number(target.max_price);
+      const limited = configured > effective ? `<div style="opacity:.75;margin-top:4px">Configured ${money(configured)} · live edge gate currently limits alerts to ${money(effective)}.</div>` : '';
+      panel.innerHTML = `<div class="tt-head"><span class="tt-title">${target.name}</span><span class="tt-state">${armed?'LIVE WATCH':'PAUSED'}</span></div><div>Sniper max: <strong>${money(effective)}</strong></div>${limited}<div style="opacity:.75;margin-top:4px">Watching the market page you already loaded. No automatic purchases.</div><button id="tt-toggle">${armed?'Pause':'Arm'} live watcher</button>`;
     }
-    panel.querySelector('#tt-toggle')?.addEventListener('click', () => { armed = !armed; bestHit = null; clearHighlights(); renderPanel(); if (armed) scheduleScan(); });
+    panel.querySelector('#tt-toggle')?.addEventListener('click', () => { armed = !armed; bestHit = null; clearHighlights(); updateTitlePulse(); renderPanel(); if (armed) scheduleScan(); });
     panel.querySelector('#tt-jump')?.addEventListener('click', () => bestHit?.row?.scrollIntoView({behavior:'smooth',block:'center'}));
+    panel.querySelector('#tt-buy-one')?.addEventListener('click', manualBuyOne);
   }
 
   function clearHighlights() {
@@ -175,16 +210,36 @@
     return hits;
   }
 
+  function liveCurrentHit(target) {
+    const hits = findQualifyingRows(target);
+    return hits[0] || null;
+  }
+
+  function manualBuyOne() {
+    const target = currentItemId ? targets.get(currentItemId) : null;
+    if (!target || !bestHit) return;
+    const current = liveCurrentHit(target);
+    if (!current || Number(current.price) !== Number(bestHit.price) || Number(current.price) > Number(target.max_price)) {
+      bestHit = current;
+      renderPanel();
+      return;
+    }
+    const rowText = (current.row.innerText || '').replace(/\s+/g, ' ').slice(0, 300);
+    const signature = `buy:${currentItemId}:${current.price}:${Date.now()}`;
+    postTelemetry(target, current, 'buy_clicked', signature, {row_text: rowText, action: 'native_buy_control', quantity_intent: 1});
+    current.control.click();
+  }
+
   function alertHit(target, hit) {
     const rowText = (hit.row.innerText || '').replace(/\s+/g, ' ').slice(0, 300);
     const signature = `${currentItemId}:${hit.price}:${rowText}`;
     if (signature === lastAlertSignature) return;
     lastAlertSignature = signature;
-    recordTelemetry(target, hit, signature, rowText);
+    postTelemetry(target, hit, 'alert_fired', `live:${signature}`, {row_text: rowText});
     try {
       GM_notification({
         title: `TornTools SNIPE · ${target.name}`,
-        text: `${money(hit.price)} is at/below your ${money(target.max_price)} max.`,
+        text: `${money(hit.price)} is at/below your ${money(target.max_price)} live-safe max.`,
         timeout: 12000,
         onclick: () => { window.focus(); hit.row.scrollIntoView({behavior:'smooth',block:'center'}); }
       });
@@ -209,14 +264,15 @@
       lastAlertSignature = null;
       clearHighlights();
     }
-    if (!armed || !currentItemId) { renderPanel(); return; }
+    if (!armed || !currentItemId) { bestHit = null; updateTitlePulse(); renderPanel(); return; }
     const target = targets.get(currentItemId);
-    if (!target) { clearHighlights(); bestHit = null; renderPanel(); return; }
+    if (!target) { clearHighlights(); bestHit = null; updateTitlePulse(); renderPanel(); return; }
     const hits = findQualifyingRows(target);
     clearHighlights();
     hits.forEach(h => h.row.classList.add(HIGHLIGHT_CLASS));
     bestHit = hits[0] || null;
     if (bestHit) alertHit(target, bestHit);
+    updateTitlePulse();
     renderPanel();
   }
 
@@ -232,6 +288,7 @@
   setInterval(() => {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
+      baseTitle = document.title;
       scheduleScan();
     }
   }, 300);
