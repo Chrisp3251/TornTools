@@ -1,5 +1,6 @@
 import asyncio
 import math
+import os
 import time
 from typing import Any
 
@@ -12,7 +13,35 @@ from reports import app
 
 FFSCOUTER_BASE = "https://ffscouter.com/api/v1"
 TORN_API_BASE = "https://api.torn.com/v2"
-MUG_SCOUT_VERSION = "0.3.1"
+MUG_SCOUT_VERSION = "0.3.3"
+
+
+def _load_env_value(name: str) -> str | None:
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    env_path = getattr(app_module, "ENV_PATH", None)
+    if not env_path or not env_path.exists():
+        return None
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            if key.strip() == name:
+                val = val.strip().strip('"').strip("'")
+                return val or None
+    except OSError:
+        return None
+    return None
+
+
+def _ffscouter_key() -> tuple[str | None, str]:
+    dedicated = _load_env_value("FFSCOUTER_API_KEY")
+    if dedicated:
+        return dedicated, "FFSCOUTER_API_KEY"
+    return app_module._api_key, "TORN_API_KEY fallback"
 
 
 def _clamp(v: float, lo: float = 0.0, hi: float = 100.0) -> float:
@@ -36,7 +65,6 @@ def _property_signal(prop: dict[str, Any] | None, player_id: int) -> dict[str, A
         owner_id = None
     ownership = "Owned" if owner_id == int(player_id) else "Rented" if owner_id else "Unknown"
 
-    # Wealth hint only. Log scale prevents a PI from dominating the whole score.
     if market_price and market_price > 0:
         score = _clamp((math.log10(max(1, market_price)) - 5.0) * 24.0)
     else:
@@ -54,8 +82,6 @@ def _fight_score(ff: float | None, minff: float, maxff: float) -> float:
     ff = float(ff)
     if ff < minff or ff > maxff:
         return 0.0
-    # Sweet spot toward the upper-middle of the chosen range: useful FF without
-    # pushing all the way to the riskiest edge.
     sweet = min(maxff, max(minff, minff + (maxff - minff) * 0.68))
     span = max(0.25, maxff - minff)
     return _clamp(100.0 - abs(ff - sweet) / span * 70.0)
@@ -100,8 +126,6 @@ def _level_score(level: int | None) -> float:
     if level is None:
         return 40.0
     level = int(level)
-    # Mild signal only: higher level can correlate with established wealth, but
-    # FF already controls fight suitability and level should never dominate.
     return _clamp(25 + min(level, 100) * 0.7)
 
 
@@ -152,11 +176,12 @@ async def mug_scout_search(
     if not app_module._api_key:
         raise HTTPException(401, "Load your Torn API key first")
 
-    # FFScouter uses registered Torn API keys. We never auto-register or send a
-    # registration request; if the current key is not registered, surface that
-    # clearly to the user.
+    ff_key, ff_key_source = _ffscouter_key()
+    if not ff_key:
+        raise HTTPException(401, "No FFScouter API key found. Add FFSCOUTER_API_KEY=... to TornTools .env and restart.")
+
     params = {
-        "key": app_module._api_key,
+        "key": ff_key,
         "minlevel": int(minlevel),
         "maxlevel": int(maxlevel),
         "inactiveonly": 0,
@@ -204,9 +229,6 @@ async def mug_scout_search(
         level = t.get("level") or profile.get("level")
         level_sig = _level_score(level)
 
-        # Fight suitability dominates. Property helps but cannot rescue an
-        # unavailable or poor-match target. Activity is a cash-opportunity hint,
-        # not a claim about wallet balance.
         base_score = fight * 0.45 + activity * 0.20 + property_signal["score"] * 0.15 + level_sig * 0.10 + availability * 0.10
         if availability <= 0:
             base_score *= 0.35
@@ -242,6 +264,7 @@ async def mug_scout_search(
     return {
         "ok": True,
         "version": MUG_SCOUT_VERSION,
+        "ffscouter_key_source": ff_key_source,
         "criteria": {
             "minff": minff,
             "maxff": maxff,
@@ -252,6 +275,7 @@ async def mug_scout_search(
         },
         "items": rows,
         "notes": [
+            f"FFScouter key source: {ff_key_source}.",
             "Mug Score ranks public signals; it does not know cash on hand.",
             "Property is a secondary wealth hint and is down-weighted when rented.",
             "Torn Item Market API listings are anonymous, so Item Market seller value is not used in this version.",
