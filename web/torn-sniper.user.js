@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornTools Live Market Sniper
 // @namespace    http://127.0.0.1:8765/
-// @version      0.1.0
+// @version      0.1.1
 // @description  Watches the Torn Item Market page you are actively viewing and alerts when a TornTools sniper target appears at or below your max price. Does not auto-buy.
 // @match        https://www.torn.com/page.php*
 // @grant        GM_xmlhttpRequest
@@ -14,6 +14,7 @@
   'use strict';
 
   const CONFIG_URL = 'http://127.0.0.1:8765/api/sniper/config';
+  const TELEMETRY_URL = 'http://127.0.0.1:8765/api/sniper/telemetry';
   const REFRESH_CONFIG_MS = 30000;
   const SCAN_DEBOUNCE_MS = 80;
   const HIGHLIGHT_CLASS = 'torntools-sniper-hit';
@@ -54,6 +55,30 @@
       onerror: () => renderPanel('TornTools localhost backend not reachable'),
       ontimeout: () => renderPanel('TornTools localhost backend timed out')
     });
+  }
+
+  function recordTelemetry(target, hit, signature, rowText) {
+    try {
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: TELEMETRY_URL,
+        headers: {'Content-Type':'application/json'},
+        data: JSON.stringify({
+          item_id: Number(currentItemId),
+          source: 'live_page',
+          event_type: 'alert',
+          price: Number(hit.price),
+          max_price: Number(target.max_price),
+          signature: `live:${signature}`,
+          metadata: {
+            page_url: location.href,
+            row_text: rowText,
+            observed_at_ms: Date.now()
+          }
+        }),
+        timeout: 2500
+      });
+    } catch {}
   }
 
   function ensureStyles() {
@@ -155,6 +180,7 @@
     const signature = `${currentItemId}:${hit.price}:${rowText}`;
     if (signature === lastAlertSignature) return;
     lastAlertSignature = signature;
+    recordTelemetry(target, hit, signature, rowText);
     try {
       GM_notification({
         title: `TornTools SNIPE · ${target.name}`,
