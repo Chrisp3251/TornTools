@@ -7,17 +7,17 @@
   <link rel="stylesheet" href="/static/style.css">
   <style>
     .score{font-weight:900}.score.good{color:var(--good)}.score.warn{color:var(--warn)}.score.bad{color:var(--bad)}
-    .mug-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}.mug-grid label{display:grid;gap:6px;color:var(--muted);font-size:12px}
-    .mug-grid input{background:#0d1219;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:9px 10px}
+    .mug-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px}.mug-grid label{display:grid;gap:6px;color:var(--muted);font-size:12px}
+    .mug-grid input,.mug-grid select{background:#0d1219;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:9px 10px}
     .signal{font-size:11px;color:var(--muted);display:block;margin-top:2px}.candidate-strong{background:rgba(73,201,139,.07)}
     #searchError{display:none;margin-top:12px;padding:11px 13px;border:1px solid rgba(239,112,112,.55);border-radius:8px;background:rgba(239,112,112,.09);color:var(--bad);white-space:pre-wrap;line-height:1.4}
-    @media(max-width:900px){.mug-grid{grid-template-columns:repeat(3,1fr)}}@media(max-width:620px){.mug-grid{grid-template-columns:1fr 1fr}}
+    @media(max-width:1050px){.mug-grid{grid-template-columns:repeat(4,1fr)}}@media(max-width:700px){.mug-grid{grid-template-columns:1fr 1fr}}
   </style>
 </head>
 <body>
 <main>
   <header class="topbar">
-    <div><div class="eyebrow">TORNTOOLS v0.3.2</div><h1>Mug Scout</h1><p>Ranks public target signals for fight suitability and mug opportunity. It cannot see cash on hand.</p></div>
+    <div><div class="eyebrow">TORNTOOLS v0.3.4</div><h1>Mug Scout</h1><p>Ranks public target signals for fight suitability and mug opportunity. It cannot see cash on hand.</p></div>
     <div><button onclick="location.href='/'">Back to TornTools</button></div>
   </header>
 
@@ -28,16 +28,17 @@
       <label>Maximum FF<input id="maxff" type="number" min="1" max="10" step="0.1" value="3.0"></label>
       <label>Minimum level<input id="minlevel" type="number" min="1" max="100" value="15"></label>
       <label>Maximum level<input id="maxlevel" type="number" min="1" max="100" value="60"></label>
+      <label>Inactive at least (days)<input id="mininactive" type="number" min="0" max="3650" step="1" value="0" placeholder="30"></label>
       <label>Results<input id="limit" type="number" min="1" max="30" value="12"></label>
       <label>Factionless only<select id="factionless"><option value="0" selected>No</option><option value="1">Yes</option></select></label>
     </div>
-    <div class="toolbar" style="margin-top:14px"><button id="searchBtn" onclick="runSearch()">Find Mug Candidates</button><span id="status" class="muted">Uses small batches to stay API-friendly.</span></div>
+    <div class="toolbar" style="margin-top:14px"><button id="searchBtn" onclick="runSearch()">Find Mug Candidates</button><button class="secondary" onclick="document.getElementById('mininactive').value=30">Set 30+ days inactive</button><span id="status" class="muted">Set inactivity to 30 for players last active more than about a month ago.</span></div>
     <div id="searchError"></div>
-    <div class="research-note"><strong>Scoring:</strong> Fight 45% · recent activity 20% · property/wealth hint 15% · level 10% · availability 10%. Property is intentionally secondary; rented properties are down-weighted.</div>
+    <div class="research-note"><strong>Scoring:</strong> Fight 45% · recent activity 20% · property/wealth hint 15% · level 10% · availability 10%. Property is intentionally secondary; rented properties are down-weighted. The inactivity field is a hard filter applied after FFScouter returns candidates.</div>
   </section>
 
   <section class="panel">
-    <div class="section-head"><div><h2>Candidates</h2><p class="muted">Higher score means a better combination of FF, availability, recent activity, and wealth hints—not guaranteed money.</p></div></div>
+    <div class="section-head"><div><h2>Candidates</h2><p class="muted">Higher score means a better combination of FF, availability, activity, and wealth hints—not guaranteed money.</p></div></div>
     <div class="table-wrap"><table class="research-table"><thead><tr><th>Player</th><th>Mug score</th><th>FF / fight</th><th>Status</th><th>Activity</th><th>Property</th><th>BS estimate</th><th>Signals</th><th></th></tr></thead><tbody id="rows"><tr><td colspan="9" class="muted">Run a search to find candidates.</td></tr></tbody></table></div>
   </section>
 </main>
@@ -59,13 +60,13 @@ function errorText(value){
   return String(value);
 }
 function setSearchError(text){const box=document.getElementById('searchError');if(!text){box.style.display='none';box.textContent='';return}box.textContent=text;box.style.display='block'}
-function render(items){const root=document.getElementById('rows');if(!items.length){root.innerHTML='<tr><td colspan="9" class="muted">No targets matched those criteria. Try widening FF to 1.2–3.5 and levels to 10–100.</td></tr>';return}root.innerHTML=items.map(x=>{const p=x.property||{},sc=x.scores||{};const cls=Number(sc.mug)>=75?'candidate-strong':'';return `<tr class="${cls}"><td><strong>${esc(x.name)}</strong><br><small class="muted">#${x.player_id} · Lv ${x.level??'—'}</small></td><td><span class="score ${scoreClass(sc.mug)}">${Number(sc.mug||0).toFixed(1)}</span></td><td><strong>${x.fair_fight==null?'—':Number(x.fair_fight).toFixed(2)}</strong><span class="signal">fight ${Number(sc.fight||0).toFixed(0)}/100</span></td><td>${esc(x.status)}<span class="signal">availability ${Number(sc.availability||0).toFixed(0)}/100</span></td><td>${esc(x.activity_label)}<span class="signal">${ageText(x.last_action_age_seconds)} · ${Number(sc.activity||0).toFixed(0)}/100</span></td><td><strong>${esc(p.name||'Unknown')}</strong><span class="signal">${esc(p.ownership||'Unknown')}${p.market_price?' · '+money.format(p.market_price):''} · ${Number(sc.property||0).toFixed(0)}/100</span></td><td>${esc(x.bs_estimate_human||'—')}<span class="signal">${esc(x.ff_source||'')}</span></td><td>Fight ${Number(sc.fight||0).toFixed(0)} · Act ${Number(sc.activity||0).toFixed(0)} · Prop ${Number(sc.property||0).toFixed(0)}</td><td><button class="mini-btn" onclick="window.open('${x.profile_url}','_blank','noopener')">Profile</button> <button class="mini-btn secondary" onclick="window.open('${x.attack_url}','_blank','noopener')">Attack</button></td></tr>`}).join('')}
+function render(items){const root=document.getElementById('rows');if(!items.length){root.innerHTML='<tr><td colspan="9" class="muted">No targets matched those criteria. If using 30+ days inactive, try widening FF/level or increasing Results.</td></tr>';return}root.innerHTML=items.map(x=>{const p=x.property||{},sc=x.scores||{};const cls=Number(sc.mug)>=75?'candidate-strong':'';return `<tr class="${cls}"><td><strong>${esc(x.name)}</strong><br><small class="muted">#${x.player_id} · Lv ${x.level??'—'}</small></td><td><span class="score ${scoreClass(sc.mug)}">${Number(sc.mug||0).toFixed(1)}</span></td><td><strong>${x.fair_fight==null?'—':Number(x.fair_fight).toFixed(2)}</strong><span class="signal">fight ${Number(sc.fight||0).toFixed(0)}/100</span></td><td>${esc(x.status)}<span class="signal">availability ${Number(sc.availability||0).toFixed(0)}/100</span></td><td>${esc(x.activity_label)}<span class="signal">${ageText(x.last_action_age_seconds)} · ${Number(sc.activity||0).toFixed(0)}/100</span></td><td><strong>${esc(p.name||'Unknown')}</strong><span class="signal">${esc(p.ownership||'Unknown')}${p.market_price?' · '+money.format(p.market_price):''} · ${Number(sc.property||0).toFixed(0)}/100</span></td><td>${esc(x.bs_estimate_human||'—')}<span class="signal">${esc(x.ff_source||'')}</span></td><td>Fight ${Number(sc.fight||0).toFixed(0)} · Act ${Number(sc.activity||0).toFixed(0)} · Prop ${Number(sc.property||0).toFixed(0)}</td><td><button class="mini-btn" onclick="window.open('${x.profile_url}','_blank','noopener')">Profile</button> <button class="mini-btn secondary" onclick="window.open('${x.attack_url}','_blank','noopener')">Attack</button></td></tr>`}).join('')}
 async function runSearch(){
   const btn=document.getElementById('searchBtn'),status=document.getElementById('status'),count=document.getElementById('resultCount');
   btn.disabled=true;setSearchError('');status.textContent='Searching FFScouter and enriching Torn profiles…';count.textContent='Loading…';
-  const q=new URLSearchParams({minff:document.getElementById('minff').value,maxff:document.getElementById('maxff').value,minlevel:document.getElementById('minlevel').value,maxlevel:document.getElementById('maxlevel').value,limit:document.getElementById('limit').value,factionless:document.getElementById('factionless').value});
+  const q=new URLSearchParams({minff:document.getElementById('minff').value,maxff:document.getElementById('maxff').value,minlevel:document.getElementById('minlevel').value,maxlevel:document.getElementById('maxlevel').value,mininactive_days:document.getElementById('mininactive').value,limit:document.getElementById('limit').value,factionless:document.getElementById('factionless').value});
   try{
-    const r=await fetch('/api/mug-scout/search?'+q.toString(),{cache:'no-store'});
+    const r=await fetch('/api/mug-scout/search-v2?'+q.toString(),{cache:'no-store'});
     let d=null;let raw='';
     try{raw=await r.text();d=raw?JSON.parse(raw):null}catch{}
     if(!r.ok){const detail=d?.detail??d?.error??raw??('HTTP '+r.status);throw new Error(`HTTP ${r.status}: ${errorText(detail)}`)}
