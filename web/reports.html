@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>TornTools Sniper Reports</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    .report-card{margin:14px 0;padding:16px;border:1px solid rgba(255,255,255,.12);border-radius:10px;background:rgba(255,255,255,.03)}
+    .report-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:12px 0}
+    .report-stat{padding:10px;border-radius:8px;background:rgba(255,255,255,.05)}
+    .report-stat strong{display:block;font-size:22px;margin-top:4px}
+    details{margin-top:12px}.compact-table{width:100%;border-collapse:collapse}.compact-table th,.compact-table td{padding:7px 8px;border-bottom:1px solid rgba(255,255,255,.08);text-align:left;vertical-align:top}
+    .empty-report{padding:24px;text-align:center;opacity:.7}
+  </style>
+</head>
+<body>
+<main>
+  <header class="topbar">
+    <div><div class="eyebrow">SNIPER SESSION HISTORY</div><h1>Sniper Reports</h1><p>Compact Start→Stop summaries. Raw telemetry is retained for 14 days and capped at 20,000 rows; only the latest 50 session summaries are kept.</p></div>
+    <div><button onclick="location.href='/'">Back to TornTools</button> <button class="secondary" onclick="loadReports()">Refresh</button></div>
+  </header>
+  <section class="panel">
+    <div class="section-head"><div><h2>Saved Sessions</h2><p class="muted">Stopping Sniper Watch closes the current report and opens this page.</p></div><span id="reportCount" class="pill">Loading…</span></div>
+    <div id="reports"><div class="empty-report">Loading reports…</div></div>
+  </section>
+</main>
+<script>
+const money = new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0});
+function fmtTime(ts){return ts?new Date(Number(ts)*1000).toLocaleString():'—'}
+function fmtDuration(s){s=Number(s||0);const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=Math.floor(s%60);return h?`${h}h ${m}m`:m?`${m}m ${sec}s`:`${sec}s`}
+function n(v,d=0){return Number(v||0).toFixed(d)}
+function renderReport(r){
+  const s=r.summary||{}; const items=s.items||[]; const ev=s.evidence||[];
+  const itemRows=items.length?items.map(x=>`<tr><td><strong>${x.item_name||('Item #'+x.item_id)}</strong></td><td>${x.opportunities||0}</td><td>${x.dashboard_alerts||0}</td><td>${x.live_alerts||0}</td><td>${x.buy_clicks||0}</td><td>${x.best_price?money.format(x.best_price):'—'}</td><td>${x.best_edge_pct==null?'—':n(x.best_edge_pct,1)+'%'}</td></tr>`).join(''):'<tr><td colspan="7" class="muted">No actionable telemetry in this session.</td></tr>';
+  const evRows=ev.length?ev.map(x=>`<tr><td><strong>${x.name}</strong><br><small class="muted">${x.stage||'—'}</small></td><td>${x.independent_events||0}</td><td>${x.recovered_events||0}/${x.completed_events||0}</td><td>${n(x.recovery_rate,0)}%</td><td>${n(x.false_positive_rate,0)}%</td><td>${n(x.median_edge_pct,1)}%</td><td>${n(x.opportunities_per_hour,2)}/hr</td><td>${n(x.sniper_score,1)}</td><td>${x.recommended_sniper_max?money.format(x.recommended_sniper_max):'—'}</td></tr>`).join(''):'<tr><td colspan="9" class="muted">No evidence snapshot saved.</td></tr>';
+  return `<article class="report-card"><div class="section-head"><div><h3 style="margin:0">Session #${r.id}</h3><p class="muted">${fmtTime(r.started_at)} → ${fmtTime(r.stopped_at)} · ${r.status}</p></div></div>
+  <div class="report-grid"><div class="report-stat">Duration<strong>${fmtDuration(s.duration_seconds)}</strong></div><div class="report-stat">Opportunities<strong>${s.opportunities||0}</strong></div><div class="report-stat">Dashboard alerts<strong>${s.dashboard_alerts||0}</strong></div><div class="report-stat">Live alerts<strong>${s.live_alerts||0}</strong></div><div class="report-stat">Buy clicks<strong>${s.buy_clicks||0}</strong></div></div>
+  <details open><summary><strong>Session activity</strong></summary><div class="table-wrap"><table class="compact-table"><thead><tr><th>Item</th><th>Opps</th><th>Dash alerts</th><th>Live alerts</th><th>Buy clicks</th><th>Best price</th><th>Best edge</th></tr></thead><tbody>${itemRows}</tbody></table></div></details>
+  <details><summary><strong>Learner evidence at stop</strong></summary><div class="table-wrap"><table class="compact-table"><thead><tr><th>Item</th><th>Events</th><th>Recovered</th><th>Recovery</th><th>False +</th><th>Median edge</th><th>Opp/hr</th><th>Score</th><th>Suggested max</th></tr></thead><tbody>${evRows}</tbody></table></div></details></article>`;
+}
+async function loadReports(){
+  const root=document.getElementById('reports'),count=document.getElementById('reportCount');
+  try{const r=await fetch('/api/sniper/reports?limit=20',{cache:'no-store'});const d=await r.json();if(!d.ok)throw new Error(d.error||'Could not load reports');const complete=(d.items||[]).filter(x=>x.status==='complete');count.textContent=`${complete.length} recent report${complete.length===1?'':'s'}`;root.innerHTML=complete.length?complete.map(renderReport).join(''):'<div class="empty-report">No completed Sniper sessions yet. Start Sniper Watch, let it run, then press Stop.</div>';}catch(e){root.innerHTML=`<div class="bad">${e.message}</div>`;count.textContent='Error'}
+}
+loadReports();
+</script>
+</body>
+</html>
