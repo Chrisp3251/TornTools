@@ -89,9 +89,15 @@ def _record_event(*, item_id: int, source: str, event_type: str, price=None, max
     return True
 
 
+def _current_max_snapshot_id() -> int:
+    with sqlite3.connect(DB_PATH) as c:
+        row = c.execute("SELECT COALESCE(MAX(id),0) FROM market_snapshots").fetchone()
+    return int(row[0] or 0)
+
+
 async def _snapshot_telemetry_loop():
-    """Record qualifying API-observed sniper opportunities without changing scan behavior."""
-    last_snapshot_id = 0
+    """Record new qualifying API-observed sniper opportunities without changing scan behavior."""
+    last_snapshot_id = _current_max_snapshot_id()
     while True:
         try:
             with sqlite3.connect(DB_PATH) as c:
