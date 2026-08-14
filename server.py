@@ -66,18 +66,19 @@ async def equipment_meta(item_id: int):
 # -----------------------------------------------------------------------------
 # Research / proof engine
 # -----------------------------------------------------------------------------
-# A snapshot being cheap is not proof by itself.  The case-maker now tries to
-# identify independent bargain EVENTS and then checks whether the market
-# recovered after each event.  That keeps one stale cheap listing from being
-# counted over and over as evidence.
+# A snapshot being cheap is not proof by itself. The case-maker identifies
+# independent bargain EVENTS and then checks whether the market recovered after
+# each event. One stale cheap listing therefore cannot be counted repeatedly.
 
 DEAL_EDGE_PCT = 8.0
 STRONG_EDGE_PCT = 15.0
 BASELINE_WINDOW = 12
-RECOVERY_WINDOW = 3
+RECOVERY_SECONDS = 10 * 60
+EVENT_SIGNATURE_COOLDOWN_SECONDS = 5 * 60
+OPPORTUNITY_RATE_HORIZON_SECONDS = 6 * 60 * 60
 
 # Research -> Hidden Deals: useful evidence, but deliberately less strict than
-# Sniper Candidate.  Hidden Deals becomes the proving ground.
+# Sniper Candidate. Hidden Deals becomes the proving ground.
 RESEARCH_MIN_SAMPLES = 16
 RESEARCH_MIN_ACTIVITY = 20
 RESEARCH_MIN_EVENTS = 2
@@ -85,7 +86,7 @@ RESEARCH_MIN_RECOVERED = 1
 RESEARCH_MIN_MEDIAN_EDGE = 8.0
 RESEARCH_MAX_FALSE_POSITIVE_RATE = 0.50
 
-# Hidden Deals -> Sniper Candidate: intentionally difficult.  Promotion remains
+# Hidden Deals -> Sniper Candidate: intentionally difficult. Promotion remains
 # manual in the UI even after these requirements are met.
 SNIPER_MIN_SAMPLES = 30
 SNIPER_MIN_EVENTS = 4
@@ -214,6 +215,7 @@ def evidence_profile(item_id: int, name: str | None = None):
             "sniper_candidate": False,
             "recommended_sniper_max": None,
             "requirements": _research_requirements_text(),
+            "data_quality": "NO DATA",
         }
 
     baselines = []
@@ -239,9 +241,9 @@ def evidence_profile(item_id: int, name: str | None = None):
                 churn_events += 1
         prev = row
 
-    # Independent deal events.  We require a return to non-deal state before a
-    # repeated cheap observation can become a new event.  This is intentionally
-    # conservative and prevents stale cached listings from inflating evidence.
+    # Independent deal events. We require a return to non-deal state before a
+    # repeated cheap observation can become a new event. A short reappearance
+    # with the same listing signature is merged to protect against cache bounce.
     events = []
     idx = 0
     while idx < n:
@@ -263,15 +265,35 @@ def evidence_profile(item_id: int, name: str | None = None):
         duration = max(0.0, float(rows[end][0]) - float(rows[start][0]))
         completed = end < n - 1
 
+        # Ignore a same-signature event that reappears almost immediately. This
+        # is more likely a cache/view inconsistency than a fresh opportunity.
+        if events and events[-1]["signature"] == start_sig:
+            seconds_since_prior = float(rows[start][0]) - float(events[-1]["end_ts"])
+            if seconds_since_prior <= EVENT_SIGNATURE_COOLDOWN_SECONDS:
+                prior = events[-1]
+                prior["end_ts"] = rows[end][0]
+                prior["min_price"] = min(x for x in (prior.get("min_price"), min_low) if x is not None)
+                prior["best_edge_pct"] = max(float(prior.get("best_edge_pct") or 0), best_edge)
+                prior["strong"] = prior["best_edge_pct"] >= STRONG_EDGE_PCT
+                prior["duration_seconds"] = max(0.0, float(prior["end_ts"]) - float(prior["start_ts"]))
+                prior["completed"] = completed
+                idx += 1
+                continue
+
         recovery = False
         false_positive = False
         if completed and baseline:
-            future = rows[end + 1:min(n, end + 1 + RECOVERY_WINDOW)]
+            # Use elapsed time instead of a fixed snapshot count. Hidden Deals
+            # can sample seconds apart while Research Lab samples minutes apart.
+            recovery_deadline = float(rows[end][0]) + RECOVERY_SECONDS
+            future = []
+            for future_row in rows[end + 1:]:
+                if float(future_row[0]) > recovery_deadline:
+                    break
+                future.append(future_row)
             future_lows = [r[1] for r in future if r[1]]
             if future_lows:
-                # Recovery means price moved back near the pre-deal normal floor.
                 recovery = max(future_lows) >= baseline * 0.95
-                # False positive means the cheap level persisted as the new normal.
                 false_positive = _median(future_lows) <= baseline * 0.90
 
         gap_pcts = []
@@ -306,22 +328,38 @@ def evidence_profile(item_id: int, name: str | None = None):
 
     recovery_rate = len(recovered) / len(completed) if completed else 0.0
     false_positive_rate = len(false_positives) / len(completed) if completed else 0.0
-    span_hours = max(0.0, (float(rows[-1][0]) - float(rows[0][0])) / 3600.0) if n > 1 else 0.0
-    opportunities_per_hour = len(events) / span_hours if span_hours >= 0.25 else 0.0
 
-    recent_lows = [r[1] for r in rows[-BASELINE_WINDOW:] if r[1]]
-    rolling_baseline = _median(recent_lows)
+    # Opportunity rate is recent, not lifetime. Old scans from days ago should
+    # not dilute what the market is doing tonight.
+    latest_ts = float(rows[-1][0])
+    earliest_ts = float(rows[0][0])
+    recent_start = max(earliest_ts, latest_ts - OPPORTUNITY_RATE_HORIZON_SECONDS)
+    recent_events = [e for e in events if float(e["start_ts"]) >= recent_start]
+    recent_span_hours = max(0.0, (latest_ts - recent_start) / 3600.0)
+    opportunities_per_hour = len(recent_events) / recent_span_hours if recent_span_hours >= 0.25 else 0.0
+
+    # Learned normal floor excludes snapshots already classified as deals. If
+    # too few normal snapshots remain, fall back to the prior-only baselines.
+    recent_indexes = range(max(0, n - BASELINE_WINDOW), n)
+    recent_normal_lows = [rows[i][1] for i in recent_indexes if rows[i][1] and not deal_flags[i]]
+    recent_baselines = [baselines[i] for i in recent_indexes if baselines[i]]
+    if len(recent_normal_lows) >= 4:
+        rolling_baseline = _median(recent_normal_lows)
+        baseline_source = "recent normal floors"
+    else:
+        rolling_baseline = _median(recent_baselines)
+        baseline_source = "prior-only rolling baselines"
+
     current_discount = ((rolling_baseline - latest_low) / rolling_baseline * 100.0) if rolling_baseline and latest_low else 0.0
     median_edge = _median(event_edges) or 0.0
     best_edge = max(event_edges) if event_edges else 0.0
     median_lifetime = _median(lifetimes)
     median_gap = _median(event_gaps) or 0.0
 
-    # Robust floor volatility (median absolute deviation) rewards a stable normal
-    # price because a stable baseline makes underpriced events more trustworthy.
     floor_volatility = 0.0
-    if rolling_baseline and recent_lows:
-        deviations = [abs(x - rolling_baseline) for x in recent_lows]
+    volatility_lows = recent_normal_lows if len(recent_normal_lows) >= 4 else [r[1] for r in rows[-BASELINE_WINDOW:] if r[1]]
+    if rolling_baseline and volatility_lows:
+        deviations = [abs(x - rolling_baseline) for x in volatility_lows]
         floor_volatility = (_median(deviations) or 0.0) / rolling_baseline * 100.0
 
     activity_score = float(liq.get("score") or 0)
@@ -355,15 +393,20 @@ def evidence_profile(item_id: int, name: str | None = None):
         and score >= SNIPER_MIN_SCORE
     )
 
-    # Max buy is based on BOTH the learned normal floor and what actual bargain
-    # events looked like.  It therefore cannot be inflated by one high average.
+    # Sniper max is learned from confirmed recovered events whenever possible.
+    # Failed/false-positive bargains should not teach the sniper what to buy.
     recommended_max = None
+    max_source = None
     if rolling_baseline and events:
-        event_prices = [e["min_price"] for e in events if e["min_price"]]
+        trusted_events = recovered if recovered else [e for e in events if not e.get("false_positive")]
+        if not trusted_events:
+            trusted_events = events
+        event_prices = [e["min_price"] for e in trusted_events if e["min_price"]]
         event_price_reference = _median(event_prices)
         baseline_cap = rolling_baseline * 0.90
         observed_cap = event_price_reference * 1.05 if event_price_reference else baseline_cap
         recommended_max = max(1, int(min(baseline_cap, observed_cap)))
+        max_source = "confirmed recoveries" if recovered else "non-false-positive events"
 
     if sniper_candidate:
         stage = "SNIPER CANDIDATE"
@@ -378,6 +421,15 @@ def evidence_profile(item_id: int, name: str | None = None):
     else:
         stage = "NO EDGE YET"
 
+    if n < SNIPER_MIN_SAMPLES:
+        data_quality = "EARLY"
+    elif len(completed) < 3:
+        data_quality = "THIN EVENT HISTORY"
+    elif len(recent_normal_lows) < 4:
+        data_quality = "BASELINE FALLBACK"
+    else:
+        data_quality = "GOOD"
+
     return {
         "id": item_id,
         "name": name,
@@ -388,7 +440,6 @@ def evidence_profile(item_id: int, name: str | None = None):
         "activity": liq.get("label", "Learning"),
         "activity_score": round(activity_score, 1),
         "independent_events": len(events),
-        # Backwards-compatible names used by the current Research Lab UI.
         "bargain_events": len(events),
         "strong_events": len(strong_events),
         "hit_rate": round((len(events) / n * 100.0) if n else 0.0, 1),
@@ -404,6 +455,7 @@ def evidence_profile(item_id: int, name: str | None = None):
         "median_deal_lifetime_seconds": round(median_lifetime, 1) if median_lifetime is not None else None,
         "opportunities_per_hour": round(opportunities_per_hour, 2),
         "rolling_baseline": int(rolling_baseline) if rolling_baseline else None,
+        "baseline_source": baseline_source,
         "current_discount_pct": round(current_discount, 2),
         "median_gap_after_deal_pct": round(median_gap, 2),
         "floor_volatility_pct": round(floor_volatility, 2),
@@ -420,6 +472,8 @@ def evidence_profile(item_id: int, name: str | None = None):
         "ready": research_ready,
         "sniper_candidate": sniper_candidate,
         "recommended_sniper_max": recommended_max,
+        "recommended_max_source": max_source,
+        "data_quality": data_quality,
         "requirements": _research_requirements_text(),
         "sniper_requirements": _sniper_requirements_text(),
         "recent_events": list(reversed(events[-5:])),
