@@ -53,14 +53,14 @@
         <div class="spacer"></div><span id="sniperStatus" class="muted">Loading sniper targets…</span>
       </div>
       <div class="scan-status"><span id="sniperState" class="status-dot idle">● Sniper idle</span><span id="sniperNext" class="muted">Next sniper check: —</span></div>
-      <div class="research-note"><strong>Fastest setup:</strong> keep TornTools running, then open the specific target's Item Market page in Torn with the companion userscript enabled. The local API watcher stays cache-aware; the userscript watches only the page you manually loaded and never auto-buys.</div>
+      <div class="research-note"><strong>Fastest setup:</strong> keep TornTools running, then open the specific target's Item Market page in Torn with the companion userscript enabled. Direct BUY 1 is offered only when the current floor quantity is exactly one; stacks stay manual.</div>
       <div class="equipment-grid" style="margin-bottom:12px">
         <label>Item ID<input id="sniperItemId" type="number" min="1" step="1" placeholder="e.g. 1086"></label>
         <label>Name<input id="sniperName" type="text" placeholder="e.g. Driver's License"></label>
         <label>Max buy price<input id="sniperMaxPrice" type="number" min="1" step="1" placeholder="e.g. 4999"></label>
       </div>
       <div class="toolbar"><button onclick="saveSniperTarget()">Add / Update Target</button><span class="muted">Driver's License #1086 is seeded at a $4,999 max the first time this version starts.</span></div>
-      <div class="table-wrap"><table class="research-table"><thead><tr><th>Target</th><th>Max buy</th><th>Current API price</th><th>Status</th><th>Live market</th><th>Actions</th></tr></thead><tbody id="sniperRows"><tr><td colspan="6" class="muted">Loading sniper targets…</td></tr></tbody></table></div>
+      <div class="table-wrap"><table class="research-table"><thead><tr><th>Target</th><th>Max buy</th><th>Current API price</th><th>Status</th><th>Buy / market</th><th>Actions</th></tr></thead><tbody id="sniperRows"><tr><td colspan="6" class="muted">Loading sniper targets…</td></tr></tbody></table></div>
     </section>
 
     <section class="panel">
@@ -111,9 +111,10 @@
     <section class="notice"><strong>How to read this:</strong> MARKET IT means current comparable asking prices leave a worthwhile premium after Torn's 5% market fee. VENDOR means the current plain market does not appear to pay enough extra. DON'T VENDOR YET protects unusually strong rolls when the current sample is weak or inconclusive.</section>
   </div>
 
-  <section class="notice"><strong>Read-only:</strong> TornTools finds opportunities and opens the market for you. It never buys or sells automatically.</section>
+  <section class="notice"><strong>Manual actions only:</strong> TornTools never buys automatically. Direct BUY 1 appears only for a single-unit live-safe candidate and is triggered by your click; stacks stay on the normal Torn market page.</section>
 </main>
 <script src="/static/app.js"></script>
 <script src="/static/sniper.js"></script>
+<script src="/static/manual-buy.js"></script>
 <script src="/static/equipment.js"></script>
 </body></html>
