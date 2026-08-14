@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         TornTools Live Market Sniper
 // @namespace    http://127.0.0.1:8765/
-// @version      0.2.0
-// @description  Watches the Torn Item Market page you are actively viewing, highlights live buy candidates, and exposes a manual BUY 1 shortcut. Never auto-buys.
+// @version      0.3.0
+// @description  Watches the Torn Item Market page you are actively viewing, highlights live buy candidates, and relays a manual dashboard BUY 1 to one verified native Buy control. Never auto-confirms or buys stacks.
 // @match        https://www.torn.com/page.php*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
@@ -15,8 +15,10 @@
 
   const CONFIG_URL = 'http://127.0.0.1:8765/api/sniper/config';
   const TELEMETRY_URL = 'http://127.0.0.1:8765/api/sniper/telemetry';
+  const BUY_INTENT_CLAIM_URL = 'http://127.0.0.1:8765/api/sniper/manual-buy-intent/claim';
   const REFRESH_CONFIG_MS = 30000;
   const SCAN_DEBOUNCE_MS = 80;
+  const BUY_INTENT_POLL_MS = 300;
   const HIGHLIGHT_CLASS = 'torntools-sniper-hit';
   const PANEL_ID = 'torntools-sniper-panel';
 
@@ -29,6 +31,7 @@
   let titleTimer = null;
   let titleFlip = false;
   let baseTitle = document.title;
+  let intentPollBusy = false;
 
   function parseCurrentItemId() {
     const text = `${location.search}&${location.hash}`;
@@ -150,7 +153,7 @@
       const baseline = Number(target.learned_baseline || 0);
       const edge = baseline ? ((baseline - Number(bestHit.price)) / baseline * 100) : null;
       const edgeText = edge == null ? '' : `<div class="tt-edge">Learned baseline ${money(baseline)} · live edge <strong>${edge.toFixed(1)}%</strong></div>`;
-      panel.innerHTML = `<div class="tt-head"><span class="tt-title">🔥 BUY CANDIDATE · ${target.name}</span><span class="tt-state">LIVE PAGE</span></div><div class="tt-price">${money(bestHit.price)}</div>${edgeText}<div>Live-safe max: <strong>${money(target.max_price)}</strong>. BUY 1 is manual and invokes only this listing's current native Buy control; Torn may still show its normal confirmation UI.</div><button id="tt-buy-one">BUY 1 · ${money(bestHit.price)}</button> <button id="tt-jump">Show listing</button> <button id="tt-toggle">Pause</button>`;
+      panel.innerHTML = `<div class="tt-head"><span class="tt-title">🔥 BUY CANDIDATE · ${target.name}</span><span class="tt-state">LIVE PAGE</span></div><div class="tt-price">${money(bestHit.price)}</div>${edgeText}<div>Live-safe max: <strong>${money(target.max_price)}</strong>. BUY 1 invokes only this listing's native Buy control; Torn's normal confirmation remains manual.</div><button id="tt-buy-one">BUY 1 · ${money(bestHit.price)}</button> <button id="tt-jump">Show listing</button> <button id="tt-toggle">Pause</button>`;
     } else {
       const configured = Number(target.configured_max_price ?? target.max_price), effective = Number(target.max_price);
       const limited = configured > effective ? `<div style="opacity:.75;margin-top:4px">Configured ${money(configured)} · live edge gate currently limits alerts to ${money(effective)}.</div>` : '';
@@ -191,9 +194,29 @@
     return null;
   }
 
+  function explicitListingQuantity(row) {
+    if (!row) return null;
+    const text = (row.innerText || '').replace(/\s+/g, ' ');
+    const patterns = [
+      /\b(?:qty|quantity|available)\s*[:x×]?\s*(\d+)\b/i,
+      /\b(?:x|×)\s*(\d+)\b/i
+    ];
+    for (const re of patterns) {
+      const m = text.match(re);
+      if (m) {
+        const n = Number(m[1]);
+        if (Number.isFinite(n) && n > 0) return n;
+      }
+    }
+    const dataQty = row.querySelector('[data-quantity]')?.getAttribute('data-quantity');
+    if (dataQty && Number(dataQty) > 0) return Number(dataQty);
+    return null;
+  }
+
   function findQualifyingRows(target) {
     const controls = [...document.querySelectorAll('button,[role="button"],input[type="button"],input[type="submit"]')]
       .filter(isVisible)
+      .filter(el => !el.closest(`#${PANEL_ID}`))
       .filter(el => /\bbuy\b/i.test((el.innerText || el.value || el.getAttribute('aria-label') || '').trim()));
     const seen = new Set();
     const hits = [];
@@ -204,7 +227,7 @@
       const prices = priceNumbers(row.innerText || '');
       if (!prices.length) continue;
       const price = Math.min(...prices);
-      if (price <= Number(target.max_price)) hits.push({row, control, price});
+      if (price <= Number(target.max_price)) hits.push({row, control, price, explicit_qty: explicitListingQuantity(row)});
     }
     hits.sort((a,b) => a.price-b.price);
     return hits;
@@ -224,10 +247,79 @@
       renderPanel();
       return;
     }
+    if (current.explicit_qty != null && Number(current.explicit_qty) > 1) {
+      current.row.scrollIntoView({behavior:'smooth',block:'center'});
+      return;
+    }
     const rowText = (current.row.innerText || '').replace(/\s+/g, ' ').slice(0, 300);
     const signature = `buy:${currentItemId}:${current.price}:${Date.now()}`;
-    postTelemetry(target, current, 'buy_clicked', signature, {row_text: rowText, action: 'native_buy_control', quantity_intent: 1});
+    postTelemetry(target, current, 'buy_clicked', signature, {row_text: rowText, action: 'native_buy_control', quantity_intent: 1, origin: 'torn_page_button'});
     current.control.click();
+  }
+
+  function notifyRelayBlocked(text, hit) {
+    try {
+      GM_notification({
+        title: 'TornTools BUY 1 blocked',
+        text,
+        timeout: 8000,
+        onclick: () => { window.focus(); hit?.row?.scrollIntoView({behavior:'smooth',block:'center'}); }
+      });
+    } catch {}
+  }
+
+  function handleClaimedIntent(intent) {
+    const target = targets.get(Number(intent.item_id));
+    if (!target || Number(currentItemId) !== Number(intent.item_id)) return;
+    const current = liveCurrentHit(target);
+    const expectedPrice = Number(intent.expected_price || 0);
+    const max = Math.min(Number(intent.effective_max || 0), Number(target.max_price || 0));
+    if (!current || Number(current.price) !== expectedPrice || Number(current.price) > max) {
+      postTelemetry(target, current, 'buy_intent_blocked', `blocked:${intent.intent_id}`, {reason:'listing_changed', expected_price:expectedPrice});
+      notifyRelayBlocked('Listing changed or disappeared. Nothing was clicked; review the open market page.', current);
+      return;
+    }
+    if (current.explicit_qty != null && Number(current.explicit_qty) > 1) {
+      postTelemetry(target, current, 'buy_intent_blocked', `blocked:${intent.intent_id}`, {reason:'stack_detected', explicit_qty:Number(current.explicit_qty)});
+      current.row.scrollIntoView({behavior:'smooth',block:'center'});
+      notifyRelayBlocked(`A stack of ${current.explicit_qty} is visible. TornTools did not click Buy; the market page is open for you.`, current);
+      return;
+    }
+    const rowText = (current.row.innerText || '').replace(/\s+/g, ' ').slice(0, 300);
+    postTelemetry(target, current, 'buy_clicked', `relaybuy:${intent.intent_id}`, {
+      row_text: rowText,
+      action:'native_buy_control',
+      quantity_intent:1,
+      origin:'dashboard_manual_intent',
+      intent_id:intent.intent_id,
+      api_floor_qty:1,
+      explicit_live_qty:current.explicit_qty
+    });
+    current.control.click();
+  }
+
+  function pollManualBuyIntent() {
+    if (intentPollBusy) return;
+    const itemId = parseCurrentItemId();
+    if (!itemId || !targets.has(Number(itemId))) return;
+    currentItemId = Number(itemId);
+    intentPollBusy = true;
+    GM_xmlhttpRequest({
+      method: 'POST',
+      url: BUY_INTENT_CLAIM_URL,
+      headers: {'Content-Type':'application/json'},
+      data: JSON.stringify({item_id:Number(itemId)}),
+      timeout: 1500,
+      onload: response => {
+        intentPollBusy = false;
+        try {
+          const data = JSON.parse(response.responseText || '{}');
+          if (data && data.claimed && data.intent) handleClaimedIntent(data.intent);
+        } catch {}
+      },
+      onerror: () => { intentPollBusy = false; },
+      ontimeout: () => { intentPollBusy = false; }
+    });
   }
 
   function alertHit(target, hit) {
@@ -295,5 +387,6 @@
 
   fetchTargets();
   setInterval(fetchTargets, REFRESH_CONFIG_MS);
+  setInterval(pollManualBuyIntent, BUY_INTENT_POLL_MS);
   scheduleScan();
 })();
