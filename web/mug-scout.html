@@ -17,7 +17,7 @@
 <body>
 <main>
   <header class="topbar">
-    <div><div class="eyebrow">TORNTOOLS v0.3.6</div><h1>Mug Scout</h1><p>Ranks public target signals for fight suitability and mug opportunity. It cannot see cash on hand.</p></div>
+    <div><div class="eyebrow">TORNTOOLS v0.3.9</div><h1>Mug Scout</h1><p>Ranks public target signals for fight suitability and mug opportunity. It cannot see cash on hand.</p></div>
     <div><button onclick="location.href='/'">Back to TornTools</button></div>
   </header>
 
@@ -27,20 +27,14 @@
       <label>Minimum FF<input id="minff" type="number" min="1" max="10" step="0.1" value="1.8"></label>
       <label>Maximum FF<input id="maxff" type="number" min="1" max="10" step="0.1" value="3.0"></label>
       <label>Minimum level<input id="minlevel" type="number" min="1" max="100" value="15"></label>
-      <label>Maximum level<input id="maxlevel" type="number" min="1" max="100" value="60"></label>
-      <label>Inactive at least (days)<input id="mininactive" type="number" min="0" max="3650" step="1" value="0" placeholder="14"></label>
-      <label>Results<input id="limit" type="number" min="1" max="30" value="12"></label>
+      <label>Maximum level<input id="maxlevel" type="number" min="1" max="100" value="100"></label>
+      <label>Cold target mode<select id="mininactive"><option value="0">Any activity</option><option value="14" selected>14+ days inactive</option><option value="21">21+ days inactive</option><option value="30">30+ days inactive</option></select></label>
+      <label>Results<input id="limit" type="number" min="1" max="30" value="20"></label>
       <label>Factionless only<select id="factionless"><option value="0" selected>No</option><option value="1">Yes</option></select></label>
     </div>
-    <div class="toolbar" style="margin-top:14px">
-      <button id="searchBtn" onclick="runSearch()">Find Mug Candidates</button>
-      <button class="secondary" onclick="setInactive(7)">7+ days</button>
-      <button class="secondary" onclick="setInactive(14)">14+ days</button>
-      <button class="secondary" onclick="setInactive(30)">30+ days</button>
-      <span id="status" class="muted">Use 14+ or 30+ days for lower-retaliation targets.</span>
-    </div>
+    <div class="toolbar" style="margin-top:14px"><button id="searchBtn" onclick="runSearch()">Find Mug Candidates</button><span id="status" class="muted">14+ days is the recommended lower-retaliation mode.</span></div>
     <div id="searchError"></div>
-    <div class="research-note"><strong>Cold-target behavior:</strong> 14+ day searches use FFScouter's native inactive-player pool, then TornTools applies your exact cutoff. 7–13 day searches use a broad pool and filter locally. In cold mode, longer inactivity raises the score instead of recent activity raising it.</div>
+    <div class="research-note"><strong>Cold-target behavior:</strong> 14+, 21+, and 30+ all start from FFScouter's native inactive-player pool, then TornTools applies the exact cutoff. Any Activity uses the normal pool. Cold-mode scoring rewards longer inactivity instead of recent activity.</div>
   </section>
 
   <section class="panel">
@@ -53,24 +47,9 @@ const money=new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maxim
 function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function scoreClass(v){v=Number(v||0);return v>=75?'good':v>=55?'warn':'bad'}
 function ageText(s){if(s==null)return 'Unknown';s=Number(s);if(s<3600)return Math.max(1,Math.round(s/60))+'m ago';if(s<86400)return Math.round(s/3600)+'h ago';return Math.round(s/86400)+'d ago'}
-function setInactive(days){document.getElementById('mininactive').value=days}
 function errorText(value){if(value==null)return 'Unknown search error.';if(typeof value==='string')return value;if(Array.isArray(value))return value.map(errorText).join('\n');if(typeof value==='object'){if(value.msg)return value.msg+(value.loc?' ('+value.loc.join(' → ')+')':'');if(value.error)return errorText(value.error);if(value.message)return errorText(value.message);try{return JSON.stringify(value)}catch{return String(value)}}return String(value)}
 function setSearchError(text){const box=document.getElementById('searchError');if(!text){box.style.display='none';box.textContent='';return}box.textContent=text;box.style.display='block'}
-function render(items){
-  const root=document.getElementById('rows');
-  if(!items.length){root.innerHTML='<tr><td colspan="9" class="muted">No targets matched those criteria. Try widening FF/level or lowering the inactivity cutoff.</td></tr>';return}
-  root.innerHTML=items.map(x=>{const p=x.property||{},sc=x.scores||{},cold=sc.retaliation!=null;const cls=Number(sc.mug)>=75?'candidate-strong':'';const risk=cold?`${esc(x.activity_label)} · ${Number(sc.retaliation||0).toFixed(0)}/100`:`${esc(x.activity_label)} · ${Number(sc.activity||0).toFixed(0)}/100`;return `<tr class="${cls}"><td><strong>${esc(x.name)}</strong><br><small class="muted">#${x.player_id} · Lv ${x.level??'—'}</small></td><td><span class="score ${scoreClass(sc.mug)}">${Number(sc.mug||0).toFixed(1)}</span></td><td><strong>${x.fair_fight==null?'—':Number(x.fair_fight).toFixed(2)}</strong><span class="signal">fight ${Number(sc.fight||0).toFixed(0)}/100</span></td><td>${esc(x.status)}<span class="signal">availability ${Number(sc.availability||0).toFixed(0)}/100</span></td><td><strong>${ageText(x.last_action_age_seconds)}</strong><span class="signal">${risk}</span></td><td><strong>${esc(p.name||'Unknown')}</strong><span class="signal">${esc(p.ownership||'Unknown')}${p.market_price?' · '+money.format(p.market_price):''} · ${Number(sc.property||0).toFixed(0)}/100</span></td><td>${esc(x.bs_estimate_human||'—')}<span class="signal">${esc(x.ff_source||'')}</span></td><td>Fight ${Number(sc.fight||0).toFixed(0)} · ${cold?'Retal '+Number(sc.retaliation||0).toFixed(0):'Act '+Number(sc.activity||0).toFixed(0)} · Prop ${Number(sc.property||0).toFixed(0)}</td><td><button class="mini-btn" onclick="window.open('${x.profile_url}','_blank','noopener')">Profile</button> <button class="mini-btn secondary" onclick="window.open('${x.attack_url}','_blank','noopener')">Attack</button></td></tr>`}).join('')
-}
-async function runSearch(){
-  const btn=document.getElementById('searchBtn'),status=document.getElementById('status'),count=document.getElementById('resultCount');
-  btn.disabled=true;setSearchError('');status.textContent='Searching FFScouter and enriching Torn profiles…';count.textContent='Loading…';
-  const q=new URLSearchParams({minff:document.getElementById('minff').value,maxff:document.getElementById('maxff').value,minlevel:document.getElementById('minlevel').value,maxlevel:document.getElementById('maxlevel').value,mininactive_days:document.getElementById('mininactive').value,limit:document.getElementById('limit').value,factionless:document.getElementById('factionless').value});
-  try{
-    const r=await fetch('/api/mug-scout/search-v3?'+q.toString(),{cache:'no-store'});let d=null,raw='';try{raw=await r.text();d=raw?JSON.parse(raw):null}catch{}
-    if(!r.ok){const detail=d?.detail??d?.error??raw??('HTTP '+r.status);throw new Error(`HTTP ${r.status}: ${errorText(detail)}`)}
-    if(!d||d.ok!==true)throw new Error(errorText(d?.error||d?.detail||'Mug Scout returned an invalid response.'));
-    render(d.items||[]);count.textContent=`${(d.items||[]).length} candidates`;status.textContent=(d.notes||[]).join(' ');
-  }catch(e){const text=errorText(e?.message||e);setSearchError(text);document.getElementById('rows').innerHTML='<tr><td colspan="9" class="bad">Search failed — see the error above.</td></tr>';count.textContent='Error';status.textContent='Search failed.'}finally{btn.disabled=false}
-}
+function render(items){const root=document.getElementById('rows');if(!items.length){root.innerHTML='<tr><td colspan="9" class="muted">No targets matched those criteria. Try 14+ days with FF 1.5–3.5 and levels 10–100.</td></tr>';return}root.innerHTML=items.map(x=>{const p=x.property||{},sc=x.scores||{},cold=sc.retaliation!=null;const cls=Number(sc.mug)>=75?'candidate-strong':'';const risk=cold?`${esc(x.activity_label)} · ${Number(sc.retaliation||0).toFixed(0)}/100`:`${esc(x.activity_label)} · ${Number(sc.activity||0).toFixed(0)}/100`;return `<tr class="${cls}"><td><strong>${esc(x.name)}</strong><br><small class="muted">#${x.player_id} · Lv ${x.level??'—'}</small></td><td><span class="score ${scoreClass(sc.mug)}">${Number(sc.mug||0).toFixed(1)}</span></td><td><strong>${x.fair_fight==null?'—':Number(x.fair_fight).toFixed(2)}</strong><span class="signal">fight ${Number(sc.fight||0).toFixed(0)}/100</span></td><td>${esc(x.status)}<span class="signal">availability ${Number(sc.availability||0).toFixed(0)}/100</span></td><td><strong>${ageText(x.last_action_age_seconds)}</strong><span class="signal">${risk}</span></td><td><strong>${esc(p.name||'Unknown')}</strong><span class="signal">${esc(p.ownership||'Unknown')}${p.market_price?' · '+money.format(p.market_price):''} · ${Number(sc.property||0).toFixed(0)}/100</span></td><td>${esc(x.bs_estimate_human||'—')}<span class="signal">${esc(x.ff_source||'')}</span></td><td>Fight ${Number(sc.fight||0).toFixed(0)} · ${cold?'Retal '+Number(sc.retaliation||0).toFixed(0):'Act '+Number(sc.activity||0).toFixed(0)} · Prop ${Number(sc.property||0).toFixed(0)}</td><td><button class="mini-btn" onclick="window.open('${x.profile_url}','_blank','noopener')">Profile</button> <button class="mini-btn secondary" onclick="window.open('${x.attack_url}','_blank','noopener')">Attack</button></td></tr>`}).join('')}
+async function runSearch(){const btn=document.getElementById('searchBtn'),status=document.getElementById('status'),count=document.getElementById('resultCount');btn.disabled=true;setSearchError('');status.textContent='Searching FFScouter and enriching Torn profiles…';count.textContent='Loading…';const q=new URLSearchParams({minff:document.getElementById('minff').value,maxff:document.getElementById('maxff').value,minlevel:document.getElementById('minlevel').value,maxlevel:document.getElementById('maxlevel').value,mininactive_days:document.getElementById('mininactive').value,limit:document.getElementById('limit').value,factionless:document.getElementById('factionless').value});try{const r=await fetch('/api/mug-scout/search-v3?'+q.toString(),{cache:'no-store'});let d=null,raw='';try{raw=await r.text();d=raw?JSON.parse(raw):null}catch{}if(!r.ok){const detail=d?.detail??d?.error??raw??('HTTP '+r.status);throw new Error(`HTTP ${r.status}: ${errorText(detail)}`)}if(!d||d.ok!==true)throw new Error(errorText(d?.error||d?.detail||'Mug Scout returned an invalid response.'));render(d.items||[]);count.textContent=`${(d.items||[]).length} candidates`;status.textContent=(d.notes||[]).join(' ')}catch(e){const text=errorText(e?.message||e);setSearchError(text);document.getElementById('rows').innerHTML='<tr><td colspan="9" class="bad">Search failed — see the error above.</td></tr>';count.textContent='Error';status.textContent='Search failed.'}finally{btn.disabled=false}}
 </script>
 </body></html>
