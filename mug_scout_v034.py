@@ -1,9 +1,27 @@
 from fastapi import Query
 
+import app as app_module
 import mug_scout
 from mug_scout import app
 
-MUG_SCOUT_VERSION = "0.3.4"
+MUG_SCOUT_VERSION = "0.3.5"
+
+
+@app.get("/api/mug-scout/status")
+async def mug_scout_status():
+    ff_key, ff_source = mug_scout._ffscouter_key()
+    return {
+        "ok": True,
+        "version": MUG_SCOUT_VERSION,
+        "env_path": str(getattr(app_module, "ENV_PATH", "")),
+        "torn_api_key_loaded": bool(app_module._api_key),
+        "ffscouter_api_key_loaded": bool(ff_key),
+        "ffscouter_key_source": ff_source if ff_key else None,
+        "routes": {
+            "search": "/api/mug-scout/search",
+            "search_with_inactivity": "/api/mug-scout/search-v2",
+        },
+    }
 
 
 @app.get("/api/mug-scout/search-v2")
