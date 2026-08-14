@@ -1,6 +1,9 @@
 import json
 import sqlite3
 import time
+import uuid
+
+from pydantic import BaseModel
 
 import runtime
 import telemetry
@@ -12,6 +15,19 @@ from telemetry import DB_PATH
 REPORT_KEEP_SESSIONS = 50
 TELEMETRY_KEEP_DAYS = 14
 TELEMETRY_MAX_ROWS = 20000
+MANUAL_BUY_INTENT_TTL_SECONDS = 10.0
+_manual_buy_intents = {}
+
+
+class ManualBuyIntentPayload(BaseModel):
+    item_id: int
+    expected_price: int
+    effective_max: int
+    expected_qty: int = 1
+
+
+class ManualBuyClaimPayload(BaseModel):
+    item_id: int
 
 
 def _init_reports_db():
@@ -118,7 +134,70 @@ def _build_summary(started_at: float, stopped_at: float):
     }
 
 
+def _purge_expired_buy_intents():
+    now = time.time()
+    for intent_id, intent in list(_manual_buy_intents.items()):
+        if now > float(intent.get("expires_at") or 0):
+            _manual_buy_intents.pop(intent_id, None)
+
+
 _init_reports_db()
+
+
+@app.post("/api/sniper/manual-buy-intent")
+async def create_manual_buy_intent(payload: ManualBuyIntentPayload):
+    _purge_expired_buy_intents()
+    if payload.item_id <= 0 or payload.expected_price <= 0 or payload.effective_max <= 0:
+        return {"ok": False, "error": "Invalid buy intent."}
+    if payload.expected_qty != 1:
+        return {"ok": False, "error": "Direct BUY 1 is only allowed when the observed floor quantity is exactly one."}
+    if payload.expected_price > payload.effective_max:
+        return {"ok": False, "error": "The observed price is above the live-safe max."}
+    with sqlite3.connect(DB_PATH) as c:
+        row = c.execute(
+            "SELECT name,enabled FROM sniper_targets WHERE item_id=?",
+            (int(payload.item_id),),
+        ).fetchone()
+    if not row or not bool(row[1]):
+        return {"ok": False, "error": "That item is not an enabled Sniper target."}
+
+    now = time.time()
+    intent_id = uuid.uuid4().hex
+    intent = {
+        "intent_id": intent_id,
+        "item_id": int(payload.item_id),
+        "item_name": str(row[0]),
+        "expected_price": int(payload.expected_price),
+        "effective_max": int(payload.effective_max),
+        "expected_qty": 1,
+        "created_at": now,
+        "expires_at": now + MANUAL_BUY_INTENT_TTL_SECONDS,
+    }
+    _manual_buy_intents[intent_id] = intent
+    telemetry._record_event(
+        item_id=int(payload.item_id),
+        source="dashboard_manual_buy",
+        event_type="buy_intent_created",
+        price=int(payload.expected_price),
+        max_price=int(payload.effective_max),
+        signature=f"intent:{intent_id}",
+        metadata={"expected_qty": 1, "expires_at": intent["expires_at"]},
+    )
+    return {"ok": True, "intent": intent}
+
+
+@app.post("/api/sniper/manual-buy-intent/claim")
+async def claim_manual_buy_intent(payload: ManualBuyClaimPayload):
+    _purge_expired_buy_intents()
+    candidates = sorted(
+        (x for x in _manual_buy_intents.values() if int(x.get("item_id") or 0) == int(payload.item_id)),
+        key=lambda x: float(x.get("created_at") or 0),
+    )
+    if not candidates:
+        return {"ok": True, "claimed": False}
+    intent = candidates[0]
+    _manual_buy_intents.pop(intent["intent_id"], None)
+    return {"ok": True, "claimed": True, "intent": intent}
 
 
 @app.post("/api/sniper/reports/start")
