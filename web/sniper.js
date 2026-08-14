@@ -5,11 +5,55 @@ let sniperRequestRunning = false;
 let sniperLastRequest = new Map();
 let sniperAlertSignatures = new Map();
 let sniperCandidateRefreshTimer = null;
+let sniperTitlePulseTimer = null;
+let sniperBaseTitle = document.title || "TornTools";
+let sniperTitleFlip = false;
 
 const SNIPER_TICK_MS = 250;
 const SNIPER_AUTOSTART_KEY = "torntools.sniper.autostart";
 
 function sniperTarget(id) { return sniperTargets.get(Number(id)) || null; }
+function configuredSniperMax(target) { return Number(target?.configured_max_price ?? target?.max_price ?? 0); }
+function effectiveSniperMax(target) { return Number(target?.effective_max_price ?? target?.max_price ?? 0); }
+
+function ensureSniperVisualStyles() {
+  if (document.getElementById("sniperVisualStyles")) return;
+  const style = document.createElement("style");
+  style.id = "sniperVisualStyles";
+  style.textContent = `
+    @keyframes ttBuyCandidatePulse {
+      0%,100% { box-shadow: inset 0 0 0 2px rgba(255,75,75,.25), 0 0 0 rgba(255,75,75,0); filter: brightness(1); }
+      50% { box-shadow: inset 0 0 0 3px rgba(255,90,90,.95), 0 0 18px rgba(255,65,65,.45); filter: brightness(1.18); }
+    }
+    #sniperRows tr.buy-candidate-pulse { animation: ttBuyCandidatePulse 1.1s ease-in-out infinite; }
+    #sniperRows tr.buy-candidate-pulse td:first-child strong::before { content: "🔥 "; }
+    .tt-live-edge-note { font-size: 11px; opacity: .72; display: block; margin-top: 2px; }
+  `;
+  document.head.appendChild(style);
+}
+
+function actionableSniperHits() {
+  return [...sniperTargets.values()].filter(t => t.enabled && sniperHit(t, hiddenResults.get(Number(t.item_id))));
+}
+
+function updateSniperTitlePulse() {
+  const hits = actionableSniperHits();
+  if (!hits.length) {
+    if (sniperTitlePulseTimer) clearInterval(sniperTitlePulseTimer);
+    sniperTitlePulseTimer = null;
+    sniperTitleFlip = false;
+    document.title = sniperBaseTitle || "TornTools";
+    return;
+  }
+  if (sniperTitlePulseTimer) return;
+  sniperBaseTitle = document.title.replace(/^🔥 BUY CANDIDATE \(\d+\) · /, "") || "TornTools";
+  sniperTitlePulseTimer = setInterval(() => {
+    const liveHits = actionableSniperHits();
+    if (!liveHits.length) { updateSniperTitlePulse(); return; }
+    sniperTitleFlip = !sniperTitleFlip;
+    document.title = sniperTitleFlip ? `🔥 BUY CANDIDATE (${liveHits.length}) · ${sniperBaseTitle}` : sniperBaseTitle;
+  }, 700);
+}
 
 function sniperDueAt(target) {
   const id = Number(target.item_id), x = hiddenResults.get(id), last = Number(sniperLastRequest.get(id) || 0);
@@ -26,27 +70,35 @@ function nextSniperTarget() {
   return best;
 }
 
-function sniperHit(target, result) { return !!result && !result.error && Number(result.lowest || 0) > 0 && Number(result.lowest) <= Number(target.max_price); }
+function sniperHit(target, result) {
+  return !!result && !result.error && Number(result.lowest || 0) > 0 && Number(result.lowest) <= effectiveSniperMax(target);
+}
 
 function processSniperResult(target) {
   const x = hiddenResults.get(Number(target.item_id)); if (!x || x.error) return;
   const hit = sniperHit(target, x), signature = `${x.cache_timestamp || 0}:${x.lowest || 0}:${x.qty_floor || 0}`, prior = sniperAlertSignatures.get(Number(target.item_id));
-  if (!hit) { sniperAlertSignatures.set(Number(target.item_id), null); return; }
-  sniperAlertSignatures.set(Number(target.item_id), signature); if (signature === prior) return;
-  const spread = Number(target.max_price) - Number(x.lowest || 0);
-  notify(`SNIPER · ${target.name}`, `${money.format(x.lowest)} is at/below your ${money.format(target.max_price)} max${spread > 0 ? ` · ${money.format(spread)} under max` : ""}. Click to open the market.`, x.market_url || target.market_url, "high");
+  if (!hit) { sniperAlertSignatures.set(Number(target.item_id), null); updateSniperTitlePulse(); return; }
+  sniperAlertSignatures.set(Number(target.item_id), signature); if (signature === prior) { updateSniperTitlePulse(); return; }
+  const max = effectiveSniperMax(target), spread = max - Number(x.lowest || 0);
+  notify(`SNIPER · ${target.name}`, `${money.format(x.lowest)} is at/below your live-safe ${money.format(max)} max${spread > 0 ? ` · ${money.format(spread)} under max` : ""}. Click to open the market.`, x.market_url || target.market_url, "high");
+  updateSniperTitlePulse();
 }
 
 function renderSniperTargets() {
+  ensureSniperVisualStyles();
   const rows = $("sniperRows"), count = $("sniperCount"); if (!rows) return;
   const targets = [...sniperTargets.values()].sort((a,b) => Number(b.enabled)-Number(a.enabled) || String(a.name).localeCompare(String(b.name))), enabledCount = targets.filter(x => x.enabled).length;
   if (count) count.textContent = `${enabledCount} armed / ${targets.length} target${targets.length===1?"":"s"}`;
-  if (!targets.length) { rows.innerHTML = '<tr><td colspan="6" class="muted">No sniper targets configured.</td></tr>'; return; }
+  if (!targets.length) { rows.innerHTML = '<tr><td colspan="6" class="muted">No sniper targets configured.</td></tr>'; updateSniperTitlePulse(); return; }
   rows.innerHTML = targets.map(t => {
     const x = hiddenResults.get(Number(t.item_id)), hit = sniperHit(t, x), due = sniperDueAt(t), wait = Math.max(0, Math.ceil((due-Date.now())/1000));
-    const state = !t.enabled ? "DISABLED" : hit ? "SNIPE NOW" : x ? (wait ? `next useful check ~${wait}s` : "due now") : "waiting for first check", rowClass = hit ? "priority-hit" : "", current = x && !x.error && x.lowest ? money.format(x.lowest) : "—";
-    return `<tr class="${rowClass}"><td><strong>${t.name}</strong><br><small class="muted">Item #${t.item_id}</small></td><td><strong>${money.format(t.max_price)}</strong></td><td>${current}</td><td><strong>${state}</strong></td><td><button class="mini-btn" onclick="window.open('${t.market_url}','_blank','noopener')">Open Live Market</button></td><td><button class="mini-btn secondary" onclick="editSniperTarget(${t.item_id})">Edit</button> <button class="mini-btn secondary" onclick="toggleSniperTarget(${t.item_id})">${t.enabled?"Disable":"Enable"}</button> <button class="mini-btn secondary" onclick="removeSniperTarget(${t.item_id})">Remove</button></td></tr>`;
+    const configured = configuredSniperMax(t), effective = effectiveSniperMax(t), limited = effective > 0 && configured > effective;
+    const state = !t.enabled ? "DISABLED" : hit ? "🔥 BUY CANDIDATE" : x ? (wait ? `next useful check ~${wait}s` : "due now") : "waiting for first check";
+    const rowClass = hit ? "priority-hit buy-candidate-pulse" : "", current = x && !x.error && x.lowest ? money.format(x.lowest) : "—";
+    const maxDisplay = limited ? `<strong>${money.format(effective)}</strong><span class="tt-live-edge-note">configured ${money.format(configured)} · live edge gate active</span>` : `<strong>${money.format(effective || configured)}</strong>`;
+    return `<tr class="${rowClass}"><td><strong>${t.name}</strong><br><small class="muted">Item #${t.item_id}</small></td><td>${maxDisplay}</td><td>${current}</td><td><strong>${state}</strong></td><td><button class="mini-btn" onclick="window.open('${t.market_url}','_blank','noopener')">${hit?"🔥 Open Buy Candidate":"Open Live Market"}</button></td><td><button class="mini-btn secondary" onclick="editSniperTarget(${t.item_id})">Edit</button> <button class="mini-btn secondary" onclick="toggleSniperTarget(${t.item_id})">${t.enabled?"Disable":"Enable"}</button> <button class="mini-btn secondary" onclick="removeSniperTarget(${t.item_id})">Remove</button></td></tr>`;
   }).join("");
+  updateSniperTitlePulse();
 }
 
 async function loadSniperTargets() {
@@ -54,7 +106,7 @@ async function loadSniperTargets() {
   try {
     const d = await call("/api/sniper/watchlist"); sniperTargets = new Map((d.items || []).map(x => [Number(x.item_id), x]));
     if (Array.isArray(d.discovery_ids)) discoveryIds = d.discovery_ids.map(Number); renderSniperTargets();
-    if (status) status.textContent = "Sniper watchlist loaded. API checks are cache-aware; the userscript companion handles live-page detection."; return true;
+    if (status) status.textContent = "Sniper watchlist loaded. Flashing rows are live buy candidates; browser companion handles the final manual buy action."; return true;
   } catch (e) { if (status) status.innerHTML = `<span class="bad">Sniper backend unavailable: ${e.message}</span>`; return false; }
 }
 
@@ -116,14 +168,14 @@ async function saveSniperTarget() {
   const existing=sniperTargets.get(id);
   try{const d=await call("/api/sniper/watchlist",{method:"POST",body:JSON.stringify({item_id:id,name:name||existing?.name||`Item ${id}`,max_price:maxPrice,enabled:existing?.enabled??true})});if(Array.isArray(d.discovery_ids))discoveryIds=d.discovery_ids.map(Number);$("sniperItemId").value="";$("sniperName").value="";$("sniperMaxPrice").value="";await loadSniperTargets();await loadSniperCandidates();if(!sniperRunning)startSniperWatch()}catch(e){msg(e.message,true)}
 }
-function editSniperTarget(id){const t=sniperTargets.get(Number(id));if(!t)return;$("sniperItemId").value=t.item_id;$("sniperName").value=t.name;$("sniperMaxPrice").value=t.max_price;$("sniperItemId").scrollIntoView({behavior:"smooth",block:"center"})}
-async function toggleSniperTarget(id){const t=sniperTargets.get(Number(id));if(!t)return;try{const d=await call("/api/sniper/watchlist",{method:"POST",body:JSON.stringify({item_id:t.item_id,name:t.name,max_price:t.max_price,enabled:!t.enabled})});if(Array.isArray(d.discovery_ids))discoveryIds=d.discovery_ids.map(Number);await loadSniperTargets();await loadSniperCandidates()}catch(e){msg(e.message,true)}}
+function editSniperTarget(id){const t=sniperTargets.get(Number(id));if(!t)return;$("sniperItemId").value=t.item_id;$("sniperName").value=t.name;$("sniperMaxPrice").value=configuredSniperMax(t);$("sniperItemId").scrollIntoView({behavior:"smooth",block:"center")}
+async function toggleSniperTarget(id){const t=sniperTargets.get(Number(id));if(!t)return;try{const d=await call("/api/sniper/watchlist",{method:"POST",body:JSON.stringify({item_id:t.item_id,name:t.name,max_price:configuredSniperMax(t),enabled:!t.enabled})});if(Array.isArray(d.discovery_ids))discoveryIds=d.discovery_ids.map(Number);await loadSniperTargets();await loadSniperCandidates()}catch(e){msg(e.message,true)}}
 async function removeSniperTarget(id){try{const d=await call(`/api/sniper/watchlist/${Number(id)}`,{method:"DELETE"});if(Array.isArray(d.discovery_ids))discoveryIds=d.discovery_ids.map(Number);sniperLastRequest.delete(Number(id));sniperAlertSignatures.delete(Number(id));await loadSniperTargets();await loadSniperCandidates()}catch(e){msg(e.message,true)}}
 
-function updateSniperStatus(next=null){const state=$("sniperState"),nextEl=$("sniperNext");if(!state||!nextEl)return;if(!sniperRunning){state.textContent="● Sniper idle";state.className="status-dot idle";nextEl.textContent="Next sniper check: —";return}state.textContent=`● Sniper armed · ${[...sniperTargets.values()].filter(x=>x.enabled).length} target(s)`;state.className="status-dot live";if(next)nextEl.textContent=`Checking ${next.name} now…`;else{const enabled=[...sniperTargets.values()].filter(x=>x.enabled);if(!enabled.length)nextEl.textContent="No enabled sniper targets.";else{const upcoming=enabled.map(t=>({t,due:sniperDueAt(t)})).sort((a,b)=>a.due-b.due)[0],wait=Math.max(0,Math.ceil((upcoming.due-Date.now())/1000));nextEl.textContent=`${upcoming.t.name}: next useful API check in ~${wait}s · live userscript can react sooner while its market page is open`}}}
+function updateSniperStatus(next=null){const state=$("sniperState"),nextEl=$("sniperNext");if(!state||!nextEl)return;if(!sniperRunning){state.textContent="● Sniper idle";state.className="status-dot idle";nextEl.textContent="Next sniper check: —";return}const hits=actionableSniperHits();state.textContent=hits.length?`🔥 ${hits.length} BUY CANDIDATE${hits.length===1?"":"S"} · Sniper armed`:`● Sniper armed · ${[...sniperTargets.values()].filter(x=>x.enabled).length} target(s)`;state.className="status-dot live";if(next)nextEl.textContent=`Checking ${next.name} now…`;else{const enabled=[...sniperTargets.values()].filter(x=>x.enabled);if(!enabled.length)nextEl.textContent="No enabled sniper targets.";else{const upcoming=enabled.map(t=>({t,due:sniperDueAt(t)})).sort((a,b)=>a.due-b.due)[0],wait=Math.max(0,Math.ceil((upcoming.due-Date.now())/1000));nextEl.textContent=`${upcoming.t.name}: next useful API check in ~${wait}s · live userscript can react sooner while its market page is open`}}}
 async function runSniperScheduler(){if(!sniperRunning)return;if(!sniperRequestRunning){const target=nextSniperTarget();updateSniperStatus(target);if(target){sniperRequestRunning=true;sniperLastRequest.set(Number(target.item_id),Date.now());try{await discoverNow([Number(target.item_id)]);processSniperResult(target)}catch(e){const status=$("sniperStatus");if(status)status.innerHTML=`<span class="bad">Sniper check error: ${e.message}</span>`}finally{sniperRequestRunning=false;renderSniperTargets()}}}updateSniperStatus();sniperTimer=setTimeout(runSniperScheduler,SNIPER_TICK_MS)}
 function startSniperWatch(){if(sniperRunning)return;sniperRunning=true;localStorage.setItem(SNIPER_AUTOSTART_KEY,"1");const btn=$("sniperToggleBtn");if(btn){btn.textContent="Stop Sniper Watch";btn.classList.remove("secondary")}runSniperScheduler()}
-function stopSniperWatch(){sniperRunning=false;sniperRequestRunning=false;localStorage.setItem(SNIPER_AUTOSTART_KEY,"0");if(sniperTimer)clearTimeout(sniperTimer);sniperTimer=null;const btn=$("sniperToggleBtn");if(btn){btn.textContent="Start Sniper Watch";btn.classList.add("secondary")}updateSniperStatus()}
+function stopSniperWatch(){sniperRunning=false;sniperRequestRunning=false;localStorage.setItem(SNIPER_AUTOSTART_KEY,"0");if(sniperTimer)clearTimeout(sniperTimer);sniperTimer=null;const btn=$("sniperToggleBtn");if(btn){btn.textContent="Start Sniper Watch";btn.classList.add("secondary")}updateSniperStatus();updateSniperTitlePulse()}
 function toggleSniperWatch(){if(sniperRunning)stopSniperWatch();else startSniperWatch()}
 
-window.addEventListener("DOMContentLoaded",async()=>{ensureSniperCandidatePanel();upgradeResearchLabForEvidence();const ok=await loadSniperTargets();await loadSniperCandidates();try{await loadLiquidity()}catch{}if(ok&&localStorage.getItem(SNIPER_AUTOSTART_KEY)!=="0")startSniperWatch();setInterval(()=>{if(sniperTargets.size)renderSniperTargets()},1000);sniperCandidateRefreshTimer=setInterval(loadSniperCandidates,30000)});
+window.addEventListener("DOMContentLoaded",async()=>{sniperBaseTitle=document.title||"TornTools";ensureSniperVisualStyles();ensureSniperCandidatePanel();upgradeResearchLabForEvidence();const ok=await loadSniperTargets();await loadSniperCandidates();try{await loadLiquidity()}catch{}if(ok&&localStorage.getItem(SNIPER_AUTOSTART_KEY)!=="0")startSniperWatch();setInterval(()=>{if(sniperTargets.size)renderSniperTargets()},1000);sniperCandidateRefreshTimer=setInterval(loadSniperCandidates,30000)});
