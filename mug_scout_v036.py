@@ -8,7 +8,8 @@ import mug_scout
 import mug_scout_v034
 from mug_scout_v034 import app
 
-MUG_SCOUT_VERSION = "0.3.6"
+MUG_SCOUT_VERSION = "0.3.9"
+SUPPORTED_INACTIVE_DAYS = {0, 14, 21, 30}
 
 
 def _retaliation_score(age_seconds):
@@ -21,10 +22,6 @@ def _retaliation_score(age_seconds):
         return 90.0, "Cold"
     if days >= 14:
         return 80.0, "Inactive"
-    if days >= 7:
-        return 65.0, "Cooling off"
-    if days >= 3:
-        return 40.0, "Recent-ish"
     return 10.0, "Recent"
 
 
@@ -36,9 +33,13 @@ async def mug_scout_search_v3(
     maxlevel: int = Query(60, ge=1, le=100),
     limit: int = Query(12, ge=1, le=30),
     factionless: int = Query(0, ge=0, le=1),
-    mininactive_days: int = Query(0, ge=0, le=3650),
+    mininactive_days: int = Query(14, ge=0, le=30),
 ):
-    if mininactive_days <= 0:
+    mininactive_days = int(mininactive_days)
+    if mininactive_days not in SUPPORTED_INACTIVE_DAYS:
+        raise HTTPException(400, "Cold target mode must be one of: 0 (Any), 14, 21, or 30 days inactive")
+
+    if mininactive_days == 0:
         result = await mug_scout_v034.mug_scout_search_v2(
             minff=minff,
             maxff=maxff,
@@ -49,7 +50,7 @@ async def mug_scout_search_v3(
             mininactive_days=0,
         )
         result["version"] = MUG_SCOUT_VERSION
-        result.setdefault("notes", []).insert(0, "Cold-target source mode: off.")
+        result.setdefault("notes", []).insert(0, "Cold-target mode: Any activity.")
         return result
 
     if minff > maxff:
@@ -61,18 +62,16 @@ async def mug_scout_search_v3(
     if not ff_key:
         raise HTTPException(401, "No FFScouter API key found. Add FFSCOUTER_API_KEY=... to TornTools .env and restart.")
 
-    # FFScouter can natively source only 14+ day inactive players. Use that
-    # pool whenever possible, then apply our exact 14/21/30+ cutoff locally.
-    source_inactive_only = 1 if int(mininactive_days) >= 14 else 0
-    source_limit = 50
+    # All supported cold modes source from FFScouter's native 14+ day inactive pool.
+    # TornTools then applies the exact 14/21/30+ last_action cutoff locally.
     params = {
         "key": ff_key,
         "minlevel": int(minlevel),
         "maxlevel": int(maxlevel),
-        "inactiveonly": source_inactive_only,
+        "inactiveonly": 1,
         "minff": float(minff),
         "maxff": float(maxff),
-        "limit": source_limit,
+        "limit": 50,
         "factionless": int(factionless),
     }
 
@@ -93,7 +92,7 @@ async def mug_scout_search_v3(
             raise HTTPException(502, "FFScouter returned an unexpected target response")
 
         now = int(time.time())
-        cutoff_seconds = int(mininactive_days) * 86400
+        cutoff_seconds = mininactive_days * 86400
         eligible = []
         for target in raw_targets:
             try:
@@ -104,9 +103,6 @@ async def mug_scout_search_v3(
             if age >= cutoff_seconds:
                 eligible.append((target, age))
 
-        # Keep Torn enrichment bounded. FFScouter custom results are already
-        # ordered by battle-stat score; enrich up to 30 cold candidates then
-        # rank those with our own fight/property/retaliation model.
         eligible = eligible[:30]
         sem = asyncio.Semaphore(4)
 
@@ -139,8 +135,6 @@ async def mug_scout_search_v3(
         level_sig = mug_scout._level_score(level)
         retaliation, retaliation_label = _retaliation_score(age)
 
-        # Cold-target mode intentionally replaces the normal positive activity
-        # weighting with retaliation safety. Property remains only a hint.
         score = mug_scout._clamp(
             fight * 0.45
             + property_signal["score"] * 0.20
@@ -194,13 +188,13 @@ async def mug_scout_search_v3(
             "maxlevel": maxlevel,
             "limit": limit,
             "factionless": bool(factionless),
-            "mininactive_days": int(mininactive_days),
-            "ffscouter_inactive_pool": bool(source_inactive_only),
+            "mininactive_days": mininactive_days,
+            "ffscouter_inactive_pool": True,
         },
         "items": rows,
         "notes": [
-            f"Cold-target mode: {int(mininactive_days)}+ days since last action.",
-            "FFScouter native 14+ day inactive pool used." if source_inactive_only else "7–13 day mode uses a broad FFScouter pool then filters last_action locally.",
+            f"Cold-target mode: {mininactive_days}+ days since last action.",
+            "FFScouter native 14+ day inactive pool used, then TornTools applied the exact cutoff.",
             f"FFScouter key source: {ff_key_source}.",
             "Cold-target Mug Score rewards fight suitability and longer inactivity to reduce retaliation risk; it still cannot know cash on hand.",
         ],
