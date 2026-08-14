@@ -10,13 +10,14 @@
     .mug-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}.mug-grid label{display:grid;gap:6px;color:var(--muted);font-size:12px}
     .mug-grid input{background:#0d1219;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:9px 10px}
     .signal{font-size:11px;color:var(--muted);display:block;margin-top:2px}.candidate-strong{background:rgba(73,201,139,.07)}
+    #searchError{display:none;margin-top:12px;padding:11px 13px;border:1px solid rgba(239,112,112,.55);border-radius:8px;background:rgba(239,112,112,.09);color:var(--bad);white-space:pre-wrap;line-height:1.4}
     @media(max-width:900px){.mug-grid{grid-template-columns:repeat(3,1fr)}}@media(max-width:620px){.mug-grid{grid-template-columns:1fr 1fr}}
   </style>
 </head>
 <body>
 <main>
   <header class="topbar">
-    <div><div class="eyebrow">TORNTOOLS v0.3.1</div><h1>Mug Scout</h1><p>Ranks public target signals for fight suitability and mug opportunity. It cannot see cash on hand.</p></div>
+    <div><div class="eyebrow">TORNTOOLS v0.3.2</div><h1>Mug Scout</h1><p>Ranks public target signals for fight suitability and mug opportunity. It cannot see cash on hand.</p></div>
     <div><button onclick="location.href='/'">Back to TornTools</button></div>
   </header>
 
@@ -31,6 +32,7 @@
       <label>Factionless only<select id="factionless"><option value="0" selected>No</option><option value="1">Yes</option></select></label>
     </div>
     <div class="toolbar" style="margin-top:14px"><button id="searchBtn" onclick="runSearch()">Find Mug Candidates</button><span id="status" class="muted">Uses small batches to stay API-friendly.</span></div>
+    <div id="searchError"></div>
     <div class="research-note"><strong>Scoring:</strong> Fight 45% · recent activity 20% · property/wealth hint 15% · level 10% · availability 10%. Property is intentionally secondary; rented properties are down-weighted.</div>
   </section>
 
@@ -44,8 +46,36 @@ const money=new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maxim
 function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function scoreClass(v){v=Number(v||0);return v>=75?'good':v>=55?'warn':'bad'}
 function ageText(s){if(s==null)return 'Unknown';s=Number(s);if(s<3600)return Math.max(1,Math.round(s/60))+'m ago';if(s<86400)return Math.round(s/3600)+'h ago';return Math.round(s/86400)+'d ago'}
-function render(items){const root=document.getElementById('rows');if(!items.length){root.innerHTML='<tr><td colspan="9" class="muted">No targets matched those criteria.</td></tr>';return}root.innerHTML=items.map(x=>{const p=x.property||{},sc=x.scores||{};const cls=Number(sc.mug)>=75?'candidate-strong':'';return `<tr class="${cls}"><td><strong>${esc(x.name)}</strong><br><small class="muted">#${x.player_id} · Lv ${x.level??'—'}</small></td><td><span class="score ${scoreClass(sc.mug)}">${Number(sc.mug||0).toFixed(1)}</span></td><td><strong>${x.fair_fight==null?'—':Number(x.fair_fight).toFixed(2)}</strong><span class="signal">fight ${Number(sc.fight||0).toFixed(0)}/100</span></td><td>${esc(x.status)}<span class="signal">availability ${Number(sc.availability||0).toFixed(0)}/100</span></td><td>${esc(x.activity_label)}<span class="signal">${ageText(x.last_action_age_seconds)} · ${Number(sc.activity||0).toFixed(0)}/100</span></td><td><strong>${esc(p.name||'Unknown')}</strong><span class="signal">${esc(p.ownership||'Unknown')}${p.market_price?' · '+money.format(p.market_price):''} · ${Number(sc.property||0).toFixed(0)}/100</span></td><td>${esc(x.bs_estimate_human||'—')}<span class="signal">${esc(x.ff_source||'')}</span></td><td>Fight ${Number(sc.fight||0).toFixed(0)} · Act ${Number(sc.activity||0).toFixed(0)} · Prop ${Number(sc.property||0).toFixed(0)}</td><td><button class="mini-btn" onclick="window.open('${x.profile_url}','_blank','noopener')">Profile</button> <button class="mini-btn secondary" onclick="window.open('${x.attack_url}','_blank','noopener')">Attack</button></td></tr>`}).join('')}
-async function runSearch(){const btn=document.getElementById('searchBtn'),status=document.getElementById('status'),count=document.getElementById('resultCount');btn.disabled=true;status.textContent='Searching FFScouter and enriching Torn profiles…';count.textContent='Loading…';const q=new URLSearchParams({minff:document.getElementById('minff').value,maxff:document.getElementById('maxff').value,minlevel:document.getElementById('minlevel').value,maxlevel:document.getElementById('maxlevel').value,limit:document.getElementById('limit').value,factionless:document.getElementById('factionless').value});try{const r=await fetch('/api/mug-scout/search?'+q.toString(),{cache:'no-store'});let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(d.detail||d.error||('HTTP '+r.status));render(d.items||[]);count.textContent=`${(d.items||[]).length} candidates`;status.textContent=(d.notes||[]).join(' ')}catch(e){document.getElementById('rows').innerHTML=`<tr><td colspan="9" class="bad">${esc(e.message)}</td></tr>`;count.textContent='Error';status.textContent='Search failed.'}finally{btn.disabled=false}}
+function errorText(value){
+  if(value==null)return 'Unknown search error.';
+  if(typeof value==='string')return value;
+  if(Array.isArray(value))return value.map(errorText).join('\n');
+  if(typeof value==='object'){
+    if(value.msg)return value.msg+(value.loc?' ('+value.loc.join(' → ')+')':'');
+    if(value.error)return errorText(value.error);
+    if(value.message)return errorText(value.message);
+    try{return JSON.stringify(value)}catch{return String(value)}
+  }
+  return String(value);
+}
+function setSearchError(text){const box=document.getElementById('searchError');if(!text){box.style.display='none';box.textContent='';return}box.textContent=text;box.style.display='block'}
+function render(items){const root=document.getElementById('rows');if(!items.length){root.innerHTML='<tr><td colspan="9" class="muted">No targets matched those criteria. Try widening FF to 1.2–3.5 and levels to 10–100.</td></tr>';return}root.innerHTML=items.map(x=>{const p=x.property||{},sc=x.scores||{};const cls=Number(sc.mug)>=75?'candidate-strong':'';return `<tr class="${cls}"><td><strong>${esc(x.name)}</strong><br><small class="muted">#${x.player_id} · Lv ${x.level??'—'}</small></td><td><span class="score ${scoreClass(sc.mug)}">${Number(sc.mug||0).toFixed(1)}</span></td><td><strong>${x.fair_fight==null?'—':Number(x.fair_fight).toFixed(2)}</strong><span class="signal">fight ${Number(sc.fight||0).toFixed(0)}/100</span></td><td>${esc(x.status)}<span class="signal">availability ${Number(sc.availability||0).toFixed(0)}/100</span></td><td>${esc(x.activity_label)}<span class="signal">${ageText(x.last_action_age_seconds)} · ${Number(sc.activity||0).toFixed(0)}/100</span></td><td><strong>${esc(p.name||'Unknown')}</strong><span class="signal">${esc(p.ownership||'Unknown')}${p.market_price?' · '+money.format(p.market_price):''} · ${Number(sc.property||0).toFixed(0)}/100</span></td><td>${esc(x.bs_estimate_human||'—')}<span class="signal">${esc(x.ff_source||'')}</span></td><td>Fight ${Number(sc.fight||0).toFixed(0)} · Act ${Number(sc.activity||0).toFixed(0)} · Prop ${Number(sc.property||0).toFixed(0)}</td><td><button class="mini-btn" onclick="window.open('${x.profile_url}','_blank','noopener')">Profile</button> <button class="mini-btn secondary" onclick="window.open('${x.attack_url}','_blank','noopener')">Attack</button></td></tr>`}).join('')}
+async function runSearch(){
+  const btn=document.getElementById('searchBtn'),status=document.getElementById('status'),count=document.getElementById('resultCount');
+  btn.disabled=true;setSearchError('');status.textContent='Searching FFScouter and enriching Torn profiles…';count.textContent='Loading…';
+  const q=new URLSearchParams({minff:document.getElementById('minff').value,maxff:document.getElementById('maxff').value,minlevel:document.getElementById('minlevel').value,maxlevel:document.getElementById('maxlevel').value,limit:document.getElementById('limit').value,factionless:document.getElementById('factionless').value});
+  try{
+    const r=await fetch('/api/mug-scout/search?'+q.toString(),{cache:'no-store'});
+    let d=null;let raw='';
+    try{raw=await r.text();d=raw?JSON.parse(raw):null}catch{}
+    if(!r.ok){const detail=d?.detail??d?.error??raw??('HTTP '+r.status);throw new Error(`HTTP ${r.status}: ${errorText(detail)}`)}
+    if(!d||d.ok!==true)throw new Error(errorText(d?.error||d?.detail||'Mug Scout returned an invalid response.'));
+    render(d.items||[]);count.textContent=`${(d.items||[]).length} candidates`;status.textContent=(d.notes||[]).join(' ');
+  }catch(e){
+    const text=errorText(e?.message||e);
+    setSearchError(text);document.getElementById('rows').innerHTML=`<tr><td colspan="9" class="bad">Search failed — see the error above.</td></tr>`;count.textContent='Error';status.textContent='Search failed.';
+  }finally{btn.disabled=false}
+}
 </script>
 </body>
 </html>
