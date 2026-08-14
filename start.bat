@@ -1,9 +1,9 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title TornTools v0.3.1 Backend
+title TornTools v0.3.3 Backend
 
-echo TornTools v0.3.1 Backend
+echo TornTools v0.3.3 Backend
 echo Dashboard: http://127.0.0.1:8765
 echo Mug Scout: http://127.0.0.1:8765/static/mug-scout.html
 echo.
