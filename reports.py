@@ -125,18 +125,19 @@ _init_reports_db()
 async def start_sniper_report():
     now = time.time()
     with sqlite3.connect(DB_PATH) as c:
-        # Close any abandoned running session at the new start boundary.
-        c.execute(
-            "UPDATE sniper_report_sessions SET stopped_at=?,status='abandoned' WHERE status='running'",
-            (now,),
-        )
+        running = c.execute(
+            "SELECT id,started_at FROM sniper_report_sessions WHERE status='running' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if running:
+            _prune_storage(c)
+            return {"ok": True, "session_id": int(running[0]), "started_at": float(running[1]), "reused": True}
         cur = c.execute(
             "INSERT INTO sniper_report_sessions(started_at,status) VALUES(?, 'running')",
             (now,),
         )
         session_id = int(cur.lastrowid)
         _prune_storage(c)
-    return {"ok": True, "session_id": session_id, "started_at": now}
+    return {"ok": True, "session_id": session_id, "started_at": now, "reused": False}
 
 
 @app.post("/api/sniper/reports/stop")
