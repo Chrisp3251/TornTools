@@ -7,5 +7,5 @@ echo TornTools Backend
 echo Dashboard: http://127.0.0.1:8765
 echo.
 start "" powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 2; Start-Process 'http://127.0.0.1:8765'"
-".venv\Scripts\python.exe" -m uvicorn runtime:app --host 127.0.0.1 --port 8765 --reload
+".venv\Scripts\python.exe" -m uvicorn reports:app --host 127.0.0.1 --port 8765 --reload
 pause
