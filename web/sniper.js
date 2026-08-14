@@ -4,6 +4,7 @@ let sniperRunning = false;
 let sniperRequestRunning = false;
 let sniperLastRequest = new Map();
 let sniperAlertSignatures = new Map();
+let sniperCandidateRefreshTimer = null;
 
 const SNIPER_TICK_MS = 250;
 const SNIPER_AUTOSTART_KEY = "torntools.sniper.autostart";
@@ -108,6 +109,72 @@ async function loadSniperTargets() {
   }
 }
 
+function candidateState(x) {
+  if (x.already_sniper) return "ALREADY SNIPER";
+  if (x.sniper_candidate) return "SNIPER CANDIDATE";
+  if ((x.independent_events||0) >= 2) return "PROVING";
+  if ((x.observations||0) >= 16) return "BUILDING CASE";
+  return "LEARNING";
+}
+
+function renderSniperCandidates(items, requirements="") {
+  const rows = $("sniperCandidateRows");
+  const note = $("sniperCandidateRequirements");
+  if (!rows) return;
+  if (note && requirements) note.innerHTML = `<strong>Sniper promotion bar:</strong> ${requirements}. Promotion is manual even after the evidence bar is cleared.`;
+  const filtered = [...(items||[])].slice(0, 16);
+  if (!filtered.length) {
+    rows.innerHTML = '<tr><td colspan="10" class="muted">No evidence yet. Run Hidden Deals to build proof.</td></tr>';
+    return;
+  }
+  rows.innerHTML = filtered.map(x => {
+    const stage = candidateState(x);
+    const cls = x.sniper_candidate && !x.already_sniper ? "priority-hit" : x.already_sniper ? "research-hit" : "";
+    const recovery = `${x.recovered_events||0}/${x.completed_events||0} · ${Number(x.recovery_rate||0).toFixed(0)}%`;
+    const falsePos = `${x.false_positive_events||0} · ${Number(x.false_positive_rate||0).toFixed(0)}%`;
+    const lifetime = x.median_deal_lifetime_seconds == null ? "—" : `${Math.round(Number(x.median_deal_lifetime_seconds))}s`;
+    const approve = x.already_sniper
+      ? '<span class="muted">Already armed</span>'
+      : x.sniper_candidate
+        ? `<button class="mini-btn" onclick="approveSniperCandidate(${x.id})">Approve to Sniper</button>`
+        : '<span class="muted">Needs more proof</span>';
+    return `<tr class="${cls}">
+      <td><strong>${x.name}</strong><br><small class="muted">Score ${Number(x.sniper_score||0).toFixed(1)}/100</small></td>
+      <td><strong>${stage}</strong></td>
+      <td>${x.independent_events||0}<br><small class="muted">${x.strong_events||0} strong</small></td>
+      <td>${recovery}</td>
+      <td>${falsePos}</td>
+      <td><strong>${Number(x.median_edge_pct||0).toFixed(1)}%</strong><br><small class="muted">best ${Number(x.best_edge_pct||0).toFixed(1)}%</small></td>
+      <td>${Number(x.opportunities_per_hour||0).toFixed(2)}/hr<br><small class="muted">life ${lifetime}</small></td>
+      <td>${x.rolling_baseline?money.format(x.rolling_baseline):"—"}</td>
+      <td>${x.recommended_sniper_max?`<strong>${money.format(x.recommended_sniper_max)}</strong>`:"—"}</td>
+      <td>${approve}</td>
+    </tr>`;
+  }).join("");
+}
+
+async function loadSniperCandidates() {
+  try {
+    const d = await call("/api/sniper/candidates");
+    renderSniperCandidates(d.items||[], d.requirements||"");
+    const count = $("sniperCandidateCount");
+    if (count) count.textContent = `${Number(d.candidate_count||0)} ready for approval`;
+  } catch(e) {
+    const rows = $("sniperCandidateRows");
+    if (rows) rows.innerHTML = `<tr><td colspan="10" class="bad">Could not load candidate evidence: ${e.message}</td></tr>`;
+  }
+}
+
+async function approveSniperCandidate(id) {
+  try {
+    const d = await call(`/api/sniper/candidates/${Number(id)}/approve`, {method:"POST"});
+    notify("Sniper target approved", `${d.item.name} armed at a learned max of ${money.format(d.item.max_price)}.`, d.item.market_url, "normal");
+    await loadSniperTargets();
+    await loadSniperCandidates();
+    if (!sniperRunning) startSniperWatch();
+  } catch(e) { msg(e.message,true); }
+}
+
 async function saveSniperTarget() {
   const id = Number($("sniperItemId")?.value || 0);
   const name = ($("sniperName")?.value || "").trim();
@@ -124,6 +191,7 @@ async function saveSniperTarget() {
     if ($("sniperName")) $("sniperName").value = "";
     if ($("sniperMaxPrice")) $("sniperMaxPrice").value = "";
     await loadSniperTargets();
+    await loadSniperCandidates();
     if (!sniperRunning) startSniperWatch();
   } catch(e) { msg(e.message, true); }
 }
@@ -147,6 +215,7 @@ async function toggleSniperTarget(id) {
     });
     if (Array.isArray(d.discovery_ids)) discoveryIds = d.discovery_ids.map(Number);
     await loadSniperTargets();
+    await loadSniperCandidates();
   } catch(e) { msg(e.message,true); }
 }
 
@@ -157,6 +226,7 @@ async function removeSniperTarget(id) {
     sniperLastRequest.delete(Number(id));
     sniperAlertSignatures.delete(Number(id));
     await loadSniperTargets();
+    await loadSniperCandidates();
   } catch(e) { msg(e.message,true); }
 }
 
@@ -234,6 +304,8 @@ function toggleSniperWatch() {
 
 window.addEventListener("DOMContentLoaded", async () => {
   const ok = await loadSniperTargets();
+  await loadSniperCandidates();
   if (ok && localStorage.getItem(SNIPER_AUTOSTART_KEY) !== "0") startSniperWatch();
   setInterval(() => { if (sniperTargets.size) renderSniperTargets(); }, 1000);
+  sniperCandidateRefreshTimer = setInterval(loadSniperCandidates, 30000);
 });
