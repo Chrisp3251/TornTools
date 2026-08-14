@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 
 # Import server first so the Research Lab routes / promotion loader are registered.
-import server  # noqa: F401
+import server
 import app as app_module
 from app import app, DB_PATH, DISCOVERY_ITEMS, market_url
 
@@ -33,12 +33,10 @@ def _equipment_monotonic_quality_ask(rows, quality):
         anchors.append([float(center), _equipment_conservative_price(nearby), len(nearby)])
     if not anchors:
         return None, 0
-
     running = 0
     for anchor in anchors:
         running = max(running, anchor[1])
         anchor[1] = running
-
     lower = [a for a in anchors if a[0] <= quality]
     upper = [a for a in anchors if a[0] >= quality]
     if lower and upper:
@@ -68,7 +66,6 @@ def smarter_equipment_verdict(rows, quality, damage, accuracy, armor, vendor_sel
     comps = close5 if len(close5) >= 4 else ranked[:12]
     chosen = comps[:8]
     prices = sorted(r["price"] for r in chosen)
-
     median_ask = int(statistics.median(prices)) if prices else None
     raw_ask = _equipment_conservative_price(prices)
     smooth_ask, smooth_support = _equipment_monotonic_quality_ask(rows, quality)
@@ -76,15 +73,9 @@ def smarter_equipment_verdict(rows, quality, damage, accuracy, armor, vendor_sel
     net = int(competitive_ask * (1 - app_module.MARKET_FEE)) if competitive_ask else None
     premium = (net - vendor_sell) if net is not None else None
     premium_pct = (premium / vendor_sell * 100) if premium is not None and vendor_sell > 0 else None
-
-    percentile = (
-        round(sum(1 for r in rows if r["quality"] < quality) / len(rows) * 100, 1)
-        if rows
-        else None
-    )
+    percentile = round(sum(1 for r in rows if r["quality"] < quality) / len(rows) * 100, 1) if rows else None
     close_count = len(close5)
 
-    # Nearby ask dispersion is a useful proxy for how trustworthy the market estimate is.
     ask_spread_pct = None
     if len(prices) >= 4 and median_ask:
         q1 = prices[int((len(prices) - 1) * 0.25)]
@@ -99,11 +90,7 @@ def smarter_equipment_verdict(rows, quality, damage, accuracy, armor, vendor_sel
     else:
         confidence = "LOW"
 
-    # Dynamic hurdle instead of the old flat 20%-of-vendor rule.
-    # Reliable/tight markets need less extra profit; noisy markets need more cushion.
     required_pct = {"HIGH": 3.0, "MEDIUM": 5.0, "LOW": 8.0}[confidence]
-
-    # Better rolls deserve more protection because vendoring permanently destroys the roll.
     if percentile is not None:
         if percentile >= 90:
             required_pct -= 2.0
@@ -111,24 +98,14 @@ def smarter_equipment_verdict(rows, quality, damage, accuracy, armor, vendor_sel
             required_pct -= 1.0
         elif percentile >= 60:
             required_pct -= 0.5
-
-    # Very scattered asks make a market listing less certain, so demand a little more edge.
     if ask_spread_pct is not None:
         if ask_spread_pct >= 60:
             required_pct += 2.0
         elif ask_spread_pct >= 40:
             required_pct += 1.0
-
     required_pct = max(1.5, required_pct)
-
-    # A modest absolute floor prevents wasting time for tiny gains, but it is capped so
-    # expensive gear no longer creates absurd requirements like $64k just because vendor is high.
     absolute_floor = max(500, min(15000, int(vendor_sell * 0.015))) if vendor_sell > 0 else 500
-    required_premium = (
-        max(absolute_floor, int(vendor_sell * required_pct / 100))
-        if vendor_sell > 0
-        else absolute_floor
-    )
+    required_premium = max(absolute_floor, int(vendor_sell * required_pct / 100)) if vendor_sell > 0 else absolute_floor
 
     if not rows:
         verdict = "DON'T VENDOR YET" if quality >= 65 else "CHECK MANUALLY"
@@ -154,26 +131,17 @@ def smarter_equipment_verdict(rows, quality, damage, accuracy, armor, vendor_sel
             f"but it falls short of the ${required_premium:,} confidence-adjusted listing target. "
             "This roll/value is close enough that vendoring immediately would be too aggressive."
         )
-    elif percentile is not None and percentile >= 85 and (
-        premium is None or premium > -required_premium
-    ):
+    elif percentile is not None and percentile >= 85 and (premium is None or premium > -required_premium):
         verdict = "DON'T VENDOR YET"
-        reason = (
-            "This is a high-percentile roll and the current market sample is not strong enough "
-            "to justify destroying it for vendor cash."
-        )
+        reason = "This is a high-percentile roll and the current market sample is not strong enough to justify destroying it for vendor cash."
     elif premium is not None and premium <= 0:
         verdict = "VENDOR"
-        reason = (
-            f"After the 5% fee, the current quality-adjusted market estimate is "
-            f"${abs(premium):,} worse than the guaranteed vendor value."
-        )
+        reason = f"After the 5% fee, the current quality-adjusted market estimate is ${abs(premium):,} worse than the guaranteed vendor value."
     else:
         verdict = "VENDOR"
         reason = (
-            f"The estimated market edge is too small for the current {confidence.lower()}-confidence "
-            f"market. It would need about {required_pct:.1f}% / ${required_premium:,} over vendor "
-            "to justify the listing risk and wait."
+            f"The estimated market edge is too small for the current {confidence.lower()}-confidence market. "
+            f"It would need about {required_pct:.1f}% / ${required_premium:,} over vendor to justify the listing risk and wait."
         )
 
     return {
@@ -197,10 +165,12 @@ def smarter_equipment_verdict(rows, quality, damage, accuracy, armor, vendor_sel
     }
 
 
-# app.py's equipment route resolves equipment_verdict from the app module at request time,
-# so replacing it here upgrades the existing route without duplicating endpoint definitions.
 app_module.equipment_verdict = smarter_equipment_verdict
 
+
+# -----------------------------------------------------------------------------
+# Sniper watchlist + evidence-gated candidate promotion
+# -----------------------------------------------------------------------------
 
 class SniperTargetPayload(BaseModel):
     item_id: int
@@ -223,7 +193,6 @@ def _init_sniper_db():
             )
             """
         )
-        # Seed the first known sniper target without overwriting later user edits.
         now = time.time()
         c.execute(
             """
@@ -253,23 +222,19 @@ def _target_dict(row):
     }
 
 
+def _target_ids():
+    return {int(row[0]) for row in _sniper_rows()}
+
+
 def _sync_sniper_targets_into_discovery():
     for row in _sniper_rows():
         target = _target_dict(row)
         item_id = target["item_id"]
         if target["enabled"]:
             meta = dict(DISCOVERY_ITEMS.get(item_id) or {})
-            meta.update(
-                {
-                    "name": target["name"],
-                    "sniper": True,
-                    "sniper_max_price": target["max_price"],
-                }
-            )
+            meta.update({"name": target["name"], "sniper": True, "sniper_max_price": target["max_price"]})
             DISCOVERY_ITEMS[item_id] = meta
         elif item_id in DISCOVERY_ITEMS and DISCOVERY_ITEMS[item_id].get("sniper"):
-            # Remove only sniper-specific metadata. Keep items that belong to the
-            # normal Hidden Deals pool for another reason (hard floor / graduate).
             meta = dict(DISCOVERY_ITEMS[item_id])
             meta.pop("sniper", None)
             meta.pop("sniper_max_price", None)
@@ -281,6 +246,24 @@ def _sync_sniper_targets_into_discovery():
 
 _init_sniper_db()
 _sync_sniper_targets_into_discovery()
+
+
+def _candidate_profiles():
+    existing_targets = _target_ids()
+    rows = []
+    for item_id, meta in list(DISCOVERY_ITEMS.items()):
+        profile = server.evidence_profile(int(item_id), meta.get("name"))
+        profile["already_sniper"] = int(item_id) in existing_targets
+        rows.append(profile)
+    rows.sort(
+        key=lambda x: (
+            bool(x.get("sniper_candidate")),
+            float(x.get("sniper_score") or 0),
+            int(x.get("independent_events") or 0),
+        ),
+        reverse=True,
+    )
+    return rows
 
 
 @app.get("/api/sniper/watchlist")
@@ -304,34 +287,19 @@ async def save_sniper_target(payload: SniperTargetPayload):
     name = (payload.name or "").strip() or f"Item {payload.item_id}"
     now = time.time()
     with sqlite3.connect(DB_PATH) as c:
-        existing = c.execute(
-            "SELECT created_at FROM sniper_targets WHERE item_id=?", (payload.item_id,)
-        ).fetchone()
+        existing = c.execute("SELECT created_at FROM sniper_targets WHERE item_id=?", (payload.item_id,)).fetchone()
         created_at = existing[0] if existing else now
         c.execute(
             """
             INSERT OR REPLACE INTO sniper_targets(item_id,name,max_price,enabled,created_at,updated_at)
             VALUES(?,?,?,?,?,?)
             """,
-            (
-                payload.item_id,
-                name,
-                payload.max_price,
-                1 if payload.enabled else 0,
-                created_at,
-                now,
-            ),
+            (payload.item_id, name, payload.max_price, 1 if payload.enabled else 0, created_at, now),
         )
     _sync_sniper_targets_into_discovery()
     return {
         "ok": True,
-        "item": {
-            "item_id": payload.item_id,
-            "name": name,
-            "max_price": payload.max_price,
-            "enabled": payload.enabled,
-            "market_url": market_url(payload.item_id),
-        },
+        "item": {"item_id": payload.item_id, "name": name, "max_price": payload.max_price, "enabled": payload.enabled, "market_url": market_url(payload.item_id)},
         "discovery_ids": list(DISCOVERY_ITEMS),
     }
 
@@ -342,7 +310,6 @@ async def delete_sniper_target(item_id: int):
         raise HTTPException(400, "Enter a valid item ID")
     with sqlite3.connect(DB_PATH) as c:
         c.execute("DELETE FROM sniper_targets WHERE item_id=?", (item_id,))
-    # Remove sniper metadata, but preserve normal Hidden Deals membership.
     if item_id in DISCOVERY_ITEMS and DISCOVERY_ITEMS[item_id].get("sniper"):
         meta = dict(DISCOVERY_ITEMS[item_id])
         meta.pop("sniper", None)
@@ -354,8 +321,54 @@ async def delete_sniper_target(item_id: int):
     return {"ok": True, "item_id": item_id, "discovery_ids": list(DISCOVERY_ITEMS)}
 
 
+@app.get("/api/sniper/candidates")
+async def sniper_candidates():
+    rows = _candidate_profiles()
+    return {
+        "ok": True,
+        "items": rows,
+        "candidate_count": sum(1 for x in rows if x.get("sniper_candidate") and not x.get("already_sniper")),
+        "requirements": server._sniper_requirements_text(),
+        "promotion_mode": "manual_approval",
+    }
+
+
+@app.post("/api/sniper/candidates/{item_id}/approve")
+async def approve_sniper_candidate(item_id: int):
+    if item_id <= 0:
+        raise HTTPException(400, "Enter a valid item ID")
+    meta = DISCOVERY_ITEMS.get(item_id)
+    if not meta:
+        raise HTTPException(404, "That item is not in the Hidden Deals proving pool")
+    profile = server.evidence_profile(item_id, meta.get("name"))
+    if not profile.get("sniper_candidate"):
+        raise HTTPException(400, "This item has not earned Sniper Candidate status yet")
+    max_price = profile.get("recommended_sniper_max")
+    if not max_price or int(max_price) <= 0:
+        raise HTTPException(400, "The evidence model could not calculate a safe sniper max price")
+
+    now = time.time()
+    name = profile.get("name") or meta.get("name") or f"Item {item_id}"
+    with sqlite3.connect(DB_PATH) as c:
+        existing = c.execute("SELECT created_at FROM sniper_targets WHERE item_id=?", (item_id,)).fetchone()
+        created_at = existing[0] if existing else now
+        c.execute(
+            """
+            INSERT OR REPLACE INTO sniper_targets(item_id,name,max_price,enabled,created_at,updated_at)
+            VALUES(?,?,?,?,?,?)
+            """,
+            (item_id, name, int(max_price), 1, created_at, now),
+        )
+    _sync_sniper_targets_into_discovery()
+    return {
+        "ok": True,
+        "item": {"item_id": item_id, "name": name, "max_price": int(max_price), "enabled": True, "market_url": market_url(item_id)},
+        "evidence": profile,
+        "discovery_ids": list(DISCOVERY_ITEMS),
+    }
+
+
 @app.get("/api/sniper/config")
 async def sniper_config():
-    """Small config endpoint consumed by the Torn userscript companion."""
     items = [_target_dict(row) for row in _sniper_rows() if bool(row[3])]
     return {"ok": True, "items": items, "refreshed_at": time.time()}
