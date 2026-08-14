@@ -17,6 +17,53 @@ function effectiveSniperMax(target) {
   return Number((target && target.effective_max_price) || (target && target.max_price) || 0);
 }
 
+function ensureSniperFlashStyles() {
+  if (document.getElementById("ttSniperFlashStyles")) return;
+  const style = document.createElement("style");
+  style.id = "ttSniperFlashStyles";
+  style.textContent = `
+    @keyframes ttSniperBuyPulse {
+      0%,100% { background: rgba(239,112,112,.10); box-shadow: inset 3px 0 0 var(--bad), 0 0 0 rgba(239,112,112,0); }
+      50% { background: rgba(239,112,112,.28); box-shadow: inset 5px 0 0 var(--bad), 0 0 20px rgba(239,112,112,.28); }
+    }
+    #sniperRows tr.tt-buy-candidate { animation: ttSniperBuyPulse 1.05s ease-in-out infinite; }
+    #sniperRows tr.tt-buy-candidate td:first-child strong::before { content: "🔥 "; }
+  `;
+  document.head.appendChild(style);
+}
+
+function ensureSniperReportsButton() {
+  if ($("sniperReportsBtn")) return;
+  const toggle = $("sniperToggleBtn");
+  const toolbar = toggle ? toggle.closest(".toolbar") : null;
+  if (!toolbar) return;
+  const btn = document.createElement("button");
+  btn.id = "sniperReportsBtn";
+  btn.className = "secondary";
+  btn.textContent = "Open Sniper Reports";
+  btn.addEventListener("click", () => window.open("/static/reports.html", "_blank", "noopener"));
+  toggle.insertAdjacentElement("afterend", btn);
+}
+
+function startReportSession() {
+  call("/api/sniper/reports/start", {method:"POST"}).catch(() => {});
+}
+
+function stopReportSession() {
+  const status = $("sniperStatus");
+  if (status) status.textContent = "Saving Sniper session report…";
+  call("/api/sniper/reports/stop", {method:"POST"})
+    .then(d => {
+      if (!status) return;
+      status.textContent = d && d.stopped
+        ? `Sniper report #${d.session_id} saved. Open Sniper Reports to review it.`
+        : "Sniper stopped. No active report session needed closing.";
+    })
+    .catch(e => {
+      if (status) status.innerHTML = `<span class="bad">Sniper stopped, but report save failed: ${e.message}</span>`;
+    });
+}
+
 function sniperDueAt(target) {
   const id = Number(target.item_id);
   const x = hiddenResults.get(id);
@@ -88,13 +135,13 @@ function renderSniperTargets() {
     const configured = configuredSniperMax(t);
     const effective = effectiveSniperMax(t);
     const limited = effective > 0 && configured > effective;
-    const state = !t.enabled ? "DISABLED" : hit ? "SNIPE NOW" : x ? (wait ? `next useful check ~${wait}s` : "due now") : "waiting for first check";
-    const rowClass = hit ? "priority-hit" : "";
+    const state = !t.enabled ? "DISABLED" : hit ? "🔥 BUY CANDIDATE" : x ? (wait ? `next useful check ~${wait}s` : "due now") : "waiting for first check";
+    const rowClass = hit ? "priority-hit tt-buy-candidate" : "";
     const current = x && !x.error && x.lowest ? money.format(x.lowest) : "—";
     const maxDisplay = limited
       ? `<strong>${money.format(effective)}</strong><br><small class="muted">configured ${money.format(configured)} · live edge gate active</small>`
       : `<strong>${money.format(effective || configured)}</strong>`;
-    return `<tr class="${rowClass}"><td><strong>${t.name}</strong><br><small class="muted">Item #${t.item_id}</small></td><td>${maxDisplay}</td><td>${current}</td><td><strong>${state}</strong></td><td><button class="mini-btn" onclick="window.open('${t.market_url}','_blank','noopener')">Open Live Market</button></td><td><button class="mini-btn secondary" onclick="editSniperTarget(${t.item_id})">Edit</button> <button class="mini-btn secondary" onclick="toggleSniperTarget(${t.item_id})">${t.enabled ? "Disable" : "Enable"}</button> <button class="mini-btn secondary" onclick="removeSniperTarget(${t.item_id})">Remove</button></td></tr>`;
+    return `<tr class="${rowClass}"><td><strong>${t.name}</strong><br><small class="muted">Item #${t.item_id}</small></td><td>${maxDisplay}</td><td>${current}</td><td><strong>${state}</strong></td><td><button class="mini-btn" onclick="window.open('${t.market_url}','_blank','noopener')">${hit ? "🔥 Open Buy Candidate" : "Open Live Market"}</button></td><td><button class="mini-btn secondary" onclick="editSniperTarget(${t.item_id})">Edit</button> <button class="mini-btn secondary" onclick="toggleSniperTarget(${t.item_id})">${t.enabled ? "Disable" : "Enable"}</button> <button class="mini-btn secondary" onclick="removeSniperTarget(${t.item_id})">Remove</button></td></tr>`;
   }).join("");
 }
 
@@ -105,7 +152,7 @@ async function loadSniperTargets() {
     sniperTargets = new Map((d.items || []).map(x => [Number(x.item_id), x]));
     if (Array.isArray(d.discovery_ids)) discoveryIds = d.discovery_ids.map(Number);
     renderSniperTargets();
-    if (status) status.textContent = "Sniper watchlist loaded. API checks are cache-aware; the userscript companion handles live-page detection.";
+    if (status) status.textContent = "Sniper watchlist loaded. Flashing rows are current live-safe buy candidates.";
     return true;
   } catch (e) {
     if (status) status.innerHTML = `<span class="bad">Sniper backend unavailable: ${e.message}</span>`;
@@ -240,7 +287,10 @@ function updateSniperStatus(next) {
     nextEl.textContent = "Next sniper check: —";
     return;
   }
-  state.textContent = `● Sniper armed · ${Array.from(sniperTargets.values()).filter(x => x.enabled).length} target(s)`;
+  const hits = Array.from(sniperTargets.values()).filter(t => t.enabled && sniperHit(t, hiddenResults.get(Number(t.item_id))));
+  state.textContent = hits.length
+    ? `🔥 ${hits.length} BUY CANDIDATE${hits.length === 1 ? "" : "S"} · Sniper armed`
+    : `● Sniper armed · ${Array.from(sniperTargets.values()).filter(x => x.enabled).length} target(s)`;
   state.className = "status-dot live";
   if (next) {
     nextEl.textContent = `Checking ${next.name} now…`;
@@ -289,10 +339,12 @@ function startSniperWatch() {
     btn.textContent = "Stop Sniper Watch";
     btn.classList.remove("secondary");
   }
+  startReportSession();
   runSniperScheduler();
 }
 
 function stopSniperWatch() {
+  if (!sniperRunning) return;
   sniperRunning = false;
   sniperRequestRunning = false;
   localStorage.setItem(SNIPER_AUTOSTART_KEY, "0");
@@ -304,6 +356,7 @@ function stopSniperWatch() {
     btn.classList.add("secondary");
   }
   updateSniperStatus();
+  stopReportSession();
 }
 
 function toggleSniperWatch() {
@@ -312,6 +365,8 @@ function toggleSniperWatch() {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
+  ensureSniperFlashStyles();
+  ensureSniperReportsButton();
   ensureSniperCandidatePanel();
   const ok = await loadSniperTargets();
   await loadSniperCandidates();
