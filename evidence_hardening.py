@@ -1,4 +1,4 @@
-import time
+import sqlite3
 
 import server
 
@@ -154,10 +154,7 @@ def _hardened_evidence_profile(item_id: int, name: str | None = None):
     score = max(0.0, min(100.0, event_score + recovery_score + edge_score + strong_score + activity_component + frequency_score - false_penalty - volatility_penalty))
 
     observations = int(profile.get("observations") or 0)
-    activity_gate_met = bool(
-        activity_score >= server.SNIPER_MIN_ACTIVITY
-        or opportunities_per_hour >= 1.0
-    )
+    activity_gate_met = bool(activity_score >= server.SNIPER_MIN_ACTIVITY or opportunities_per_hour >= 1.0)
     sniper_candidate = (
         observations >= server.SNIPER_MIN_SAMPLES
         and len(trusted) >= server.SNIPER_MIN_EVENTS
@@ -258,3 +255,55 @@ def _hardened_evidence_profile(item_id: int, name: str | None = None):
 
 
 server.evidence_profile = _hardened_evidence_profile
+
+
+# Reports are generated later, so make the saved evidence snapshot expose the
+# same quality controls the learner is actually using.
+try:
+    import reports
+
+    def _hardened_report_profiles():
+        out = []
+        with sqlite3.connect(server.DB_PATH) as c:
+            targets = c.execute(
+                "SELECT item_id,name,max_price,enabled FROM sniper_targets ORDER BY name COLLATE NOCASE"
+            ).fetchall()
+        for item_id, name, configured_max, enabled in targets:
+            try:
+                p = server.evidence_profile(int(item_id), name)
+            except Exception:
+                p = {}
+            out.append({
+                "item_id": int(item_id),
+                "name": name,
+                "enabled": bool(enabled),
+                "configured_max": int(configured_max),
+                "rolling_baseline": p.get("rolling_baseline"),
+                "recommended_sniper_max": p.get("recommended_sniper_max"),
+                "recommended_max_source": p.get("recommended_max_source"),
+                "independent_events": p.get("independent_events", 0),
+                "trusted_events": p.get("trusted_events", 0),
+                "quarantined_events": p.get("quarantined_events", 0),
+                "evaluated_events": p.get("evaluated_events", 0),
+                "recovered_events": p.get("recovered_events", 0),
+                "completed_events": p.get("completed_events", 0),
+                "recovery_rate": p.get("recovery_rate", 0),
+                "false_positive_events": p.get("false_positive_events", 0),
+                "false_positive_rate": p.get("false_positive_rate", 0),
+                "median_edge_pct": p.get("median_edge_pct", 0),
+                "best_edge_pct": p.get("best_edge_pct", 0),
+                "trusted_best_edge_pct": p.get("trusted_best_edge_pct", 0),
+                "extreme_events": p.get("extreme_events", 0),
+                "extreme_recovered_events": p.get("extreme_recovered_events", 0),
+                "extreme_training_unlocked": bool(p.get("extreme_training_unlocked")),
+                "opportunities_per_hour": p.get("opportunities_per_hour", 0),
+                "sniper_score": p.get("sniper_score", 0),
+                "data_quality": p.get("data_quality", "—"),
+                "stage": p.get("stage", "—"),
+                "sniper_candidate": bool(p.get("sniper_candidate")),
+            })
+        return out
+
+    reports._current_profiles = _hardened_report_profiles
+except Exception:
+    pass
