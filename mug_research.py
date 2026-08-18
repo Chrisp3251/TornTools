@@ -6,11 +6,12 @@ from fastapi import HTTPException, Query
 from pydantic import BaseModel
 
 import mug_scout_v036
+import evidence_hardening
 from mug_scout_v036 import app
 
 BASE = Path(__file__).resolve().parent
 DB_PATH = BASE / "torntools.sqlite3"
-MUG_RESEARCH_VERSION = "0.4.1"
+MUG_RESEARCH_VERSION = "0.4.2"
 
 
 class MugResultPayload(BaseModel):
