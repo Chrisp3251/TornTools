@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>TornTools Market Scanner</title>
+  <title>TornTools</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <main>
   <header class="topbar">
-    <div><div class="eyebrow">LOCAL MARKET TOOL · v0.3.1</div><h1>TornTools</h1><p>Market scanning, niche arbitrage, equipment pricing, live market sniping, and mug-target scouting.</p></div>
+    <div><div class="eyebrow">TORNTOOLS · v0.4.4</div><h1>TornTools</h1><p>Market intelligence, evidence-driven sniping, equipment pricing, and mug research.</p></div>
     <span id="status" class="pill">Checking…</span>
   </header>
 
@@ -20,66 +20,53 @@
   </section>
 
   <nav class="tool-tabs" aria-label="TornTools sections">
-    <button id="tabScanner" class="tool-tab active" onclick="switchToolTab('scanner')">Market Scanner</button>
+    <button id="tabScanner" class="tool-tab active" onclick="switchToolTab('scanner')">Market Intelligence</button>
     <button id="tabEquipment" class="tool-tab" onclick="switchToolTab('equipment')">Equipment Checker</button>
     <button class="tool-tab" onclick="location.href='/static/mug-scout.html'">Mug Scout</button>
   </nav>
 
   <div id="scannerView">
-    <section class="panel controls">
-      <div class="section-head"><div><h2>Main Scanner</h2><p class="muted">Personal-use items alert when cheap. Resale items alert when the estimated profit is worth it.</p></div></div>
-      <div class="control-grid">
-        <label>Check every<select id="interval"><option value="15">15 sec</option><option value="30" selected>30 sec</option><option value="60">60 sec</option><option value="120">2 min</option></select></label>
-        <label>Minimum profit<input id="minProfit" type="number" min="0" step="10000" value="125000"></label>
-        <label>Minimum ROI<input id="minRoi" type="number" min="0" step="0.5" value="6"></label>
-        <label>Personal-use discount<input id="stockDiscount" type="number" min="0" step="0.5" value="2.5"></label>
-      </div>
-      <div class="watchlist" id="watchlist"></div>
-      <div class="toolbar"><button id="scanBtn" onclick="scanNow()">Scan Now</button><button id="autoBtn" class="secondary" onclick="toggleAuto()">Start Auto Scan</button><label class="check"><input id="sound" type="checkbox"> Sound for good buys</label><div class="spacer"></div><span id="lastUpdated" class="muted">Not scanned yet</span></div>
-    </section>
-
-    <section class="summary-grid">
-      <article class="summary-card"><span>Watching</span><strong id="watchingCount">0</strong><small>items</small></article>
-      <article class="summary-card"><span>Good buys</span><strong id="dealCount">0</strong><small>meeting your settings</small></article>
-      <article class="summary-card"><span>Best buy right now</span><strong id="bestDeal">—</strong><small id="bestDealSub">Nothing scanned yet</small></article>
-    </section>
-
-    <section class="panel"><div class="section-head"><div><h2>Main Watchlist</h2><p class="muted">Your Xanax/eDVD/resale watch items appear here after a scan.</p></div></div><div id="cards" class="cards"><div class="empty">Ready to scan. Choose what you want to watch above and click Scan Now or Start Auto Scan.</div></div></section>
-
     <section class="panel">
-      <div class="section-head"><div><h2>Sniper Watchlist</h2><p class="muted">Explicit max-buy targets get their own cache-aware API watcher. The companion userscript can react to live Item Market page updates before the API cache catches up.</p></div><span id="sniperCount" class="pill">Loading…</span></div>
+      <div class="section-head"><div><h2>Sniper Watchlist</h2><p class="muted">Explicit max-buy targets get the fastest cache-aware monitoring. Market Intelligence and Sniper share the same Torn market responses whenever possible.</p></div><span id="sniperCount" class="pill">Loading…</span></div>
       <div class="toolbar">
         <button id="sniperToggleBtn" class="secondary" onclick="toggleSniperWatch()">Start Sniper Watch</button>
         <button class="secondary" onclick="window.open('/static/torn-sniper.user.js','_blank','noopener')">Open / Install Live Userscript</button>
         <div class="spacer"></div><span id="sniperStatus" class="muted">Loading sniper targets…</span>
       </div>
       <div class="scan-status"><span id="sniperState" class="status-dot idle">● Sniper idle</span><span id="sniperNext" class="muted">Next sniper check: —</span></div>
-      <div class="research-note"><strong>Fastest setup:</strong> keep TornTools running, then open the specific target's Item Market page in Torn with the companion userscript enabled. Direct BUY 1 is offered only when the current floor quantity is exactly one; stacks stay manual.</div>
+      <div class="research-note"><strong>Purpose:</strong> Sniper is only for items you explicitly arm. It does not need its own separate market-learning system; it consumes the same evidence and shared cache as Market Intelligence.</div>
       <div class="equipment-grid" style="margin-bottom:12px">
         <label>Item ID<input id="sniperItemId" type="number" min="1" step="1" placeholder="e.g. 1086"></label>
         <label>Name<input id="sniperName" type="text" placeholder="e.g. Driver's License"></label>
         <label>Max buy price<input id="sniperMaxPrice" type="number" min="1" step="1" placeholder="e.g. 4999"></label>
       </div>
-      <div class="toolbar"><button onclick="saveSniperTarget()">Add / Update Target</button><span class="muted">Driver's License #1086 is seeded at a $4,999 max the first time this version starts.</span></div>
+      <div class="toolbar"><button onclick="saveSniperTarget()">Add / Update Target</button><span class="muted">Promotion remains manual even when the evidence model marks an item as a Sniper Candidate.</span></div>
       <div class="table-wrap"><table class="research-table"><thead><tr><th>Target</th><th>Max buy</th><th>Current API price</th><th>Status</th><th>Buy / market</th><th>Actions</th></tr></thead><tbody id="sniperRows"><tr><td colspan="6" class="muted">Loading sniper targets…</td></tr></tbody></table></div>
     </section>
 
     <section class="panel">
-      <div class="section-head"><div><h2>Hidden Deals</h2><p class="muted">Adaptive niche-market scanner for proven opportunities, including items that graduate from the Research Lab.</p></div><button id="notifyBtn" class="secondary mini-btn" onclick="enableNotifications()">Enable Desktop Alerts</button></div>
-      <div class="toolbar"><button id="discoverBtn" onclick="discoverNow()">Scan Full Hidden Pool</button><button id="discoverAutoBtn" class="secondary" onclick="toggleDiscoverAuto()">Start Smart Hidden Scan</button><label class="check"><input id="hiddenSound" type="checkbox" checked> Alert sound</label><div class="spacer"></div><span id="discoverUpdated" class="muted">Not scanned yet</span></div>
-      <div class="scan-status"><span id="discoverState" class="status-dot idle">● Hidden scan idle</span><span id="discoverNext" class="muted">Next check: —</span></div>
-      <div class="progress-track"><div id="discoverProgress" class="progress-fill"></div></div>
-      <div class="research-note">The scanner learns from <strong>new Torn cache snapshots only</strong>. NPC-floor items stay protected from cooling off too far. Research graduates enter this same adaptive pool and then earn HOT/WARM/COLD priority from their actual Hidden Deals results.</div>
-      <div class="table-wrap"><table class="research-table"><thead><tr><th>Item</th><th>Signal</th><th>Cache state</th><th>Buy</th><th>Market value</th><th>Discount</th><th>NPC floor</th><th>Potential</th><th></th></tr></thead><tbody id="discoverRows"><tr><td colspan="9" class="muted">Run Hidden Deals to check the niche-item pool.</td></tr></tbody></table></div>
-    </section>
+      <div class="section-head"><div><h2>Market Intelligence</h2><p class="muted">One adaptive engine now handles discovery, learning, evidence collection, and actionable hidden deals.</p></div><button id="notifyBtn" class="secondary mini-btn" onclick="enableNotifications()">Enable Desktop Alerts</button></div>
+      <div class="toolbar">
+        <button id="intelligenceToggleBtn" class="secondary" onclick="toggleMarketIntelligence()">Start Market Intelligence</button>
+        <button class="secondary" onclick="loadLiquidity(); refreshBrokerStatus()">Refresh Evidence</button>
+        <label class="check"><input id="hiddenSound" type="checkbox" checked> Alert sound</label>
+        <div class="spacer"></div><span id="intelligenceUpdated" class="muted">Not started</span>
+      </div>
+      <div class="scan-status"><span id="intelligenceState" class="status-dot idle">● Intelligence idle</span><span id="intelligenceNext" class="muted">Next check: —</span></div>
+      <div class="progress-track"><div id="intelligenceProgress" class="progress-fill"></div></div>
+      <div class="research-note"><strong>Single pipeline:</strong> LEARNING → BUILDING CASE → PROVEN MARKET → ACTIVE WATCH → SNIPER CANDIDATE. The engine prioritizes useful cache windows, samples unproven research markets slowly in the background, and avoids duplicate market calls through the shared request broker.</div>
+      <div class="summary-grid" style="margin:12px 0 18px">
+        <article class="summary-card"><span>Upstream market calls</span><strong id="brokerUpstream">0</strong><small>actual Torn requests</small></article>
+        <article class="summary-card"><span>Requests reused</span><strong id="brokerReused">0</strong><small>duplicate calls avoided</small></article>
+        <article class="summary-card"><span>Reuse rate</span><strong id="brokerReusePct">0%</strong><small>shared response efficiency</small></article>
+      </div>
 
-    <section class="panel">
-      <div class="section-head"><div><h2>Research Lab</h2><p class="muted">Builds a case for less-obvious markets. Items that repeatedly produce real bargain patterns can automatically graduate into Hidden Deals.</p></div></div>
-      <div class="toolbar"><button id="learnBtn" onclick="learnNow()">Run Deep Research Sample</button><button id="learnAutoBtn" class="secondary" onclick="toggleLearnAuto()">Start Research Lab</button><div class="spacer"></div><span id="learnUpdated" class="muted">No research data yet</span></div>
-      <div class="scan-status"><span id="learnState" class="status-dot idle">● Research idle</span><span id="learnNext" class="muted">Next research sample: —</span></div>
-      <div class="progress-track"><div id="learnProgress" class="progress-fill"></div></div>
-      <div id="researchRequirements" class="research-note"><strong>What it measures:</strong> repeat 8%+ bargain snapshots, 15%+ strong discounts, market activity, listing churn, floor changes, gap behavior, and whether the edge repeats often enough to justify permanent Hidden Deals coverage.</div>
-      <div class="table-wrap"><table class="research-table"><thead><tr><th>Item / score</th><th>Stage</th><th>Current</th><th>Samples</th><th>Bargain hits</th><th>Strong hits</th><th>Discount history</th><th>Activity</th><th>Listing churn</th><th>Gap behavior</th><th>Floor changes</th><th></th></tr></thead><tbody id="liquidityRows"><tr><td colspan="12" class="muted">Run samples to start building evidence.</td></tr></tbody></table></div>
+      <div class="section-head" style="margin-top:10px"><div><h3 style="margin:0">Live Opportunities</h3><p class="muted">Current market state for the adaptive watch pool.</p></div><span id="discoverUpdated" class="muted">No checks yet</span></div>
+      <div class="table-wrap"><table class="research-table"><thead><tr><th>Item</th><th>Signal</th><th>Cache state</th><th>Buy</th><th>Market value</th><th>Discount</th><th>NPC floor</th><th>Potential</th><th></th></tr></thead><tbody id="discoverRows"><tr><td colspan="9" class="muted">Start Market Intelligence to begin checking the adaptive pool.</td></tr></tbody></table></div>
+
+      <div class="section-head" style="margin-top:24px"><div><h3 style="margin:0">Evidence & Learning</h3><p class="muted">The same engine uses accumulated snapshots to decide which markets deserve more attention.</p></div><span id="learnUpdated" class="muted">Evidence not refreshed yet</span></div>
+      <div id="researchRequirements" class="research-note"><strong>Evidence model:</strong> independent bargain events, recoveries, market activity, listing churn, floor changes, gap behavior, and trusted edge quality.</div>
+      <div class="table-wrap"><table class="research-table"><thead><tr><th>Item / score</th><th>Stage</th><th>Current</th><th>Samples</th><th>Bargain hits</th><th>Strong hits</th><th>Discount history</th><th>Activity</th><th>Listing churn</th><th>Gap behavior</th><th>Floor changes</th><th></th></tr></thead><tbody id="liquidityRows"><tr><td colspan="12" class="muted">Evidence will populate from the shared market history.</td></tr></tbody></table></div>
     </section>
   </div>
 
