@@ -15,14 +15,22 @@
     else el.textContent = text;
   }
 
+  function installBazaarWatchNav() {
+    const nav = document.querySelector('.tool-tabs');
+    if (!nav || document.getElementById('tabBazaarWatch')) return;
+    const btn = document.createElement('button');
+    btn.id = 'tabBazaarWatch';
+    btn.className = 'tool-tab';
+    btn.textContent = 'Bazaar Watch';
+    btn.addEventListener('click', () => { location.href = '/static/bazaar-watch.html'; });
+    nav.appendChild(btn);
+  }
+
   function installMarketIntelligenceButton() {
     const btn = document.getElementById('intelligenceToggleBtn');
     if (!btn || btn.__ttMarketIntelBound) return;
     btn.__ttMarketIntelBound = true;
 
-    // Remove the inline handler so there is exactly one click path. This makes
-    // the condensed Market Intelligence control independent of global-window
-    // inline-handler quirks while leaving the scheduler itself untouched.
     btn.removeAttribute('onclick');
     btn.addEventListener('click', () => {
       try {
@@ -117,6 +125,7 @@
 
   function install() {
     installStyle();
+    installBazaarWatchNav();
     installMarketIntelligenceButton();
     if (typeof renderSniperTargets === 'function' && !renderSniperTargets.__ttManualBuyWrapped) {
       const original = renderSniperTargets;
