@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>TornTools · Bazaar Watch</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main>
+  <header class="topbar">
+    <div><div class="eyebrow">TORNTOOLS · BAZAAR WATCH</div><h1>Single-Player Bazaar Watch</h1><p>Watch one player's bazaar for newly-added or changed high-value listings without hammering the Torn API.</p></div>
+    <button class="secondary" onclick="location.href='/'">⌂ Home</button>
+  </header>
+
+  <section class="panel">
+    <div class="section-head">
+      <div><h2>Watch Settings</h2><p class="muted">The first check creates a baseline and does not alert on items that were already there.</p></div>
+      <span id="watchState" class="pill">Idle</span>
+    </div>
+    <div class="equipment-grid">
+      <label>Player ID<input id="playerId" type="number" min="1" step="1" placeholder="e.g. 1234567"></label>
+      <label>Minimum value<input id="minValue" type="number" min="1" step="100000" value="5000000"></label>
+    </div>
+    <div class="research-note"><strong>Value trigger:</strong> TornTools checks the seller's asking price, Torn market value, asking stack value, and market stack value. If any crosses your threshold, the listing qualifies.</div>
+    <div class="toolbar">
+      <button id="saveBtn">Save Watch</button>
+      <button id="toggleBtn" class="secondary">Start Monitoring</button>
+      <button id="checkBtn" class="secondary">Check Now</button>
+      <button id="openBtn" class="secondary" disabled>Open Bazaar</button>
+      <div class="spacer"></div><span id="lastChecked" class="muted">Not checked yet</span>
+    </div>
+    <div id="message"></div>
+  </section>
+
+  <section class="summary-grid">
+    <article class="summary-card"><span>Bazaar status</span><strong id="bazaarOpen">—</strong><small id="bazaarCount">0 listings</small></article>
+    <article class="summary-card"><span>Expensive now</span><strong id="expensiveCount">0</strong><small>meeting threshold</small></article>
+    <article class="summary-card"><span>New alerts</span><strong id="newEventCount">0</strong><small>this check</small></article>
+  </section>
+
+  <section class="panel">
+    <div class="section-head"><div><h2>Current Expensive Listings</h2><p class="muted">These are currently in the watched player's bazaar and meet your threshold.</p></div></div>
+    <div class="table-wrap"><table class="research-table">
+      <thead><tr><th>Item</th><th>Qty</th><th>Ask</th><th>Market value</th><th>Ask stack</th><th>Market stack</th><th>Why shown</th></tr></thead>
+      <tbody id="currentRows"><tr><td colspan="7" class="muted">No bazaar data yet.</td></tr></tbody>
+    </table></div>
+  </section>
+
+  <section class="panel">
+    <div class="section-head"><div><h2>Detected Additions / Changes</h2><p class="muted">Stored locally so you can see what appeared while TornTools was running.</p></div><button id="refreshEventsBtn" class="secondary mini-btn">Refresh History</button></div>
+    <div class="table-wrap"><table class="research-table">
+      <thead><tr><th>When</th><th>Change</th><th>Item</th><th>Qty</th><th>Ask</th><th>Market</th><th>Value signal</th><th></th></tr></thead>
+      <tbody id="eventRows"><tr><td colspan="8" class="muted">No events recorded yet.</td></tr></tbody>
+    </table></div>
+  </section>
+
+  <section class="notice"><strong>API pacing:</strong> monitoring checks about every 31 seconds. Torn's user bazaar selection is globally cached, so faster polling would mostly repeat the same snapshot.</section>
+</main>
+<script src="/static/bazaar-watch.js"></script>
+</body>
+</html>
