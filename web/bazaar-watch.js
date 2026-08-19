@@ -33,14 +33,14 @@ async function bwLoadConfig(){
   }catch(e){bwMsg(`Could not load Bazaar Watch: ${e.message}`,true);return null}
 }
 
-async function bwSaveConfig(enabled=true){
+async function bwSaveConfig(enabled=true,quiet=false){
   const playerId=Math.trunc(Number($bw('playerId').value||0));
   const minValue=Math.trunc(Number($bw('minValue').value||0));
   if(!playerId||minValue<=0)throw new Error('Enter a valid player ID and minimum value.');
   const d=await bwCall('/api/bazaar-watch/config',{method:'POST',body:JSON.stringify({player_id:playerId,min_value:minValue,enabled})});
   bwConfig=d;
   $bw('openBtn').disabled=false;
-  bwMsg(`Watching player #${playerId} for listings worth ${bwMoney.format(minValue)} or more.`);
+  if(!quiet)bwMsg(`Watching player #${playerId} for listings worth ${bwMoney.format(minValue)} or more.`);
   return d;
 }
 
@@ -57,7 +57,11 @@ function bwNotify(event){
 
 function bwRenderCurrent(items){
   const root=$bw('currentRows');if(!root)return;
-  if(!items||!items.length){root.innerHTML='<tr><td colspan="7" class="muted">No current listings meet the threshold.</td></tr>';return}
+  if(!items||!items.length){
+    const threshold=Number(bwConfig?.min_value||$bw('minValue')?.value||0);
+    root.innerHTML=`<tr><td colspan="7" class="muted">Bazaar listings were found, but none currently meet the active ${bwMoney.format(threshold)} threshold.</td></tr>`;
+    return;
+  }
   root.innerHTML=items.map(x=>`<tr>
     <td><strong>${x.name}</strong><br><small class="muted">Item #${x.item_id||'—'}${x.uid?` · UID ${x.uid}`:''}</small></td>
     <td>${x.quantity}</td>
@@ -91,17 +95,19 @@ async function bwLoadEvents(){
 async function bwCheckNow(){
   const btn=$bw('checkBtn');if(btn){btn.disabled=true;btn.textContent='Checking…'}
   try{
-    if(!bwConfig||!bwConfig.player_id)await bwSaveConfig(true);
+    // Always persist the values currently visible in the form before checking.
+    // Previously a changed threshold was ignored after the first saved player.
+    await bwSaveConfig(bwRunning,true);
     const d=await bwCall('/api/bazaar-watch/check',{method:'POST'});
-    $bw('lastChecked').textContent=`Checked ${new Date(d.checked_at*1000).toLocaleTimeString()}${d.bazaar_timestamp?` · Torn snapshot ${new Date(d.bazaar_timestamp*1000).toLocaleTimeString()}`:''}`;
+    $bw('lastChecked').textContent=`Checked ${new Date(d.checked_at*1000).toLocaleTimeString()} · threshold ${bwMoney.format(d.min_value||0)}${d.bazaar_timestamp?` · Torn snapshot ${new Date(d.bazaar_timestamp*1000).toLocaleTimeString()}`:''}`;
     $bw('bazaarOpen').textContent=d.bazaar_is_open===true?'OPEN':d.bazaar_is_open===false?'CLOSED':'UNKNOWN';
     $bw('bazaarCount').textContent=`${d.listing_count||0} listing${Number(d.listing_count||0)===1?'':'s'}`;
     $bw('expensiveCount').textContent=Number(d.expensive_count||0).toLocaleString();
     $bw('newEventCount').textContent=Number(d.event_count||0).toLocaleString();
     bwRenderCurrent(d.expensive_items||[]);
-    if(d.first_baseline)bwMsg('Baseline saved. Existing listings will not trigger alerts; future additions/changes will.');
-    else if(d.event_count)bwMsg(`${d.event_count} qualifying bazaar change${d.event_count===1?'':'s'} detected.`);
-    else bwMsg('No new qualifying bazaar changes this check.');
+    if(d.first_baseline)bwMsg(`Baseline saved at ${bwMoney.format(d.min_value||0)}. Existing listings will not trigger alerts; future additions/changes will.`);
+    else if(d.event_count)bwMsg(`${d.event_count} qualifying bazaar change${d.event_count===1?'':'s'} detected at the ${bwMoney.format(d.min_value||0)} threshold.`);
+    else bwMsg(`No new qualifying bazaar changes. Active threshold: ${bwMoney.format(d.min_value||0)}.`);
     for(const e of d.events||[])bwNotify(e);
     if(d.event_count)await bwLoadEvents();
     return d;
@@ -111,7 +117,7 @@ async function bwCheckNow(){
 
 async function bwStart(){
   try{
-    await bwSaveConfig(true);
+    await bwSaveConfig(true,true);
     if('Notification' in window&&Notification.permission==='default'){
       try{await Notification.requestPermission()}catch{}
     }
