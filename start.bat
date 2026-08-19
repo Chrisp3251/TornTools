@@ -17,5 +17,5 @@ echo API key preflight from %CD%\.env:
 ".venv\Scripts\python.exe" -c "import app,mug_scout; print('  TORN_API_KEY:       ' + ('LOADED' if app._api_key else 'MISSING')); k,s=mug_scout._ffscouter_key(); print('  FFSCOUTER_API_KEY:  ' + ('LOADED ('+s+')' if k else 'MISSING'))"
 echo.
 start "" powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 2; Start-Process 'http://127.0.0.1:8765'"
-".venv\Scripts\python.exe" -m uvicorn bazaar_watch:app --host 127.0.0.1 --port 8765 --reload
+".venv\Scripts\python.exe" -m uvicorn bazaar_watch_runtime:app --host 127.0.0.1 --port 8765 --reload
 pause
