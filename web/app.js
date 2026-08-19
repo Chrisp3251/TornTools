@@ -1,13 +1,22 @@
 const money = new Intl.NumberFormat("en-US", {style:"currency", currency:"USD", maximumFractionDigits:0});
 
-let timer=null, learnTimer=null, discoverTimer=null, learnCountdownTimer=null, discoverCountdownTimer=null;
-let metadata=[], discoveryIds=[], discoverBatchIndex=0, hiddenResults=new Map();
-let lastAlertKey=null, hiddenAlertState=new Map(), hiddenCacheState=new Map(), lastResearchCandidates=new Set();
-let discoverRunning=false, discoverRequestRunning=false;
+let metadata=[];
+let discoveryIds=[];
+let hiddenResults=new Map();
+let hiddenAlertState=new Map();
+let hiddenCacheState=new Map();
 let hiddenPriorityStats=new Map();
+let intelligenceRunning=false;
+let intelligenceTimer=null;
+let intelligenceResearchTimer=null;
+let intelligenceResearchKickoff=null;
+let intelligenceRequestRunning=false;
+let brokerTimer=null;
 
-const DISCOVER_ITEM_SECONDS=1;
+const INTELLIGENCE_TICK_MS=1000;
+const BACKGROUND_RESEARCH_MS=10*60*1000;
 const HIDDEN_STATS_KEY="torntools.hiddenPriority.v1";
+const INTELLIGENCE_AUTOSTART_KEY="torntools.intelligence.autostart";
 const $=id=>document.getElementById(id);
 
 async function call(path,opts={}) {
@@ -19,26 +28,41 @@ async function call(path,opts={}) {
 
 function msg(text,bad=false){const e=$("msg");if(!e)return;e.textContent=text;e.className=bad?"bad":"good"}
 
-function saveSettings(){
-  localStorage.setItem("torntools.v044.settings",JSON.stringify({
-    interval:$("interval").value,minProfit:$("minProfit").value,minRoi:$("minRoi").value,stockDiscount:$("stockDiscount").value,
-    sound:$("sound").checked,hiddenSound:$("hiddenSound").checked,
-    watched:[...document.querySelectorAll(".watch-toggle")].filter(x=>x.checked).map(x=>Number(x.value))
-  }));
+async function appStatus(){
+  try{
+    const d=await call("/api/status");
+    metadata=d.items||[];
+    discoveryIds=(d.discovery_ids||[]).map(Number);
+    const e=$("status");
+    if(e){e.textContent=d.key_loaded?`● V${d.version} · key loaded`:`● V${d.version} · key needed`;e.className=d.key_loaded?"pill good":"pill warn"}
+    const p=$("apiPanel");if(p)p.hidden=!!d.key_loaded;
+    await loadLiquidity();
+    updateNotificationButton();
+    await refreshBrokerStatus();
+  }catch{
+    const e=$("status");if(e){e.textContent="Backend unavailable";e.className="pill bad"}
+  }
 }
 
-function loadSavedSettings(){
+async function loadKey(){
+  const input=$("key"),btn=$("loadKeyBtn");
+  const k=input?input.value.trim():"";
+  if(!k)return msg("Paste a key first.",true);
   try{
-    const raw=localStorage.getItem("torntools.v044.settings")||localStorage.getItem("torntools.v043.settings")||localStorage.getItem("torntools.v042.settings")||localStorage.getItem("torntools.v04.settings")||"{}";
-    const s=JSON.parse(raw);
-    if(s.interval)$("interval").value=s.interval;
-    if(s.minProfit!==undefined)$("minProfit").value=s.minProfit;
-    if(s.minRoi!==undefined)$("minRoi").value=s.minRoi;
-    if(s.stockDiscount!==undefined)$("stockDiscount").value=s.stockDiscount;
-    if(s.sound!==undefined)$("sound").checked=!!s.sound;
-    if(s.hiddenSound!==undefined)$("hiddenSound").checked=!!s.hiddenSound;
-    return Array.isArray(s.watched)?s.watched:null;
-  }catch{return null}
+    if(btn)btn.disabled=true;
+    const r=await call("/api/key",{method:"POST",body:JSON.stringify({api_key:k})});
+    if(input)input.value="";
+    msg(r.message||"Key loaded.");
+    await appStatus();
+  }catch(e){msg(e.message,true)}finally{if(btn)btn.disabled=false}
+}
+
+async function forgetKey(){
+  try{
+    await call("/api/key",{method:"DELETE"});
+    stopMarketIntelligence();
+    await appStatus();
+  }catch(e){msg(e.message,true)}
 }
 
 function loadHiddenPriorityStats(){
@@ -53,8 +77,8 @@ function hiddenStat(id){
   if(!hiddenPriorityStats.has(id))hiddenPriorityStats.set(id,{snapshots:0,hits:0,strongHits:0,npcHits:0,lastSnapshotTs:0,lastHitAt:0,lastRequestAt:0,consecutiveMisses:0});
   return hiddenPriorityStats.get(id);
 }
-function isHiddenHit(x){return x&& !x.error && (x.kind==="NPC FLOOR" || (x.kind==="UNDER MARKET"&&Number(x.discount_pct||0)>=8))}
-function isStrongHiddenHit(x){return x&& !x.error && (x.kind==="NPC FLOOR" || (x.kind==="UNDER MARKET"&&Number(x.discount_pct||0)>=15))}
+function isHiddenHit(x){return x&&!x.error&&(x.kind==="NPC FLOOR"||(x.kind==="UNDER MARKET"&&Number(x.discount_pct||0)>=8))}
+function isStrongHiddenHit(x){return x&&!x.error&&(x.kind==="NPC FLOOR"||(x.kind==="UNDER MARKET"&&Number(x.discount_pct||0)>=15))}
 function recordHiddenOutcome(x,isNewSnapshot){
   if(!x||x.error)return;
   const s=hiddenStat(x.id),now=Date.now();s.lastRequestAt=now;
@@ -78,86 +102,21 @@ function hiddenPriorityInfo(id,x=null){
   return{label,rank,n,hits,strong,npc,hitRate,strongRate,hardFloor};
 }
 
-async function appStatus(){
-  try{
-    const d=await call("/api/status"); metadata=d.items||[]; discoveryIds=d.discovery_ids||[];
-    const e=$("status");e.textContent=d.key_loaded?`● V${d.version} · key loaded`:`● V${d.version} · key needed`;e.className=d.key_loaded?"pill good":"pill warn";
-    const p=$("apiPanel");if(p)p.hidden=!!d.key_loaded;
-    renderWatchlist();await loadLiquidity();updateNotificationButton();
-  }catch{const e=$("status");e.textContent="Backend unavailable";e.className="pill bad"}
-}
-
-function renderWatchlist(){
-  const h=$("watchlist"),saved=loadSavedSettings();h.innerHTML="";
-  metadata.forEach(i=>{const checked=saved?saved.includes(i.id):i.enabled;h.insertAdjacentHTML("beforeend",`<label class="watch-chip ${i.mode}"><input class="watch-toggle" type="checkbox" value="${i.id}" ${checked?"checked":""} onchange="watchChanged()"><span class="watch-name">${i.name}</span><span class="mode-tag">${i.mode==="stock"?"PERSONAL USE":"RESALE"}</span><small>${i.note}</small></label>`)});
-  watchChanged(false);
-}
-function watchChanged(save=true){$("watchingCount").textContent=document.querySelectorAll(".watch-toggle:checked").length;if(save)saveSettings()}
-
-async function loadKey(){
-  const k=$("key").value.trim();if(!k)return msg("Paste a key first.",true);
-  try{$("loadKeyBtn").disabled=true;const r=await call("/api/key",{method:"POST",body:JSON.stringify({api_key:k})});$("key").value="";msg(r.message||"Key loaded.");await appStatus()}
-  catch(e){msg(e.message,true)}finally{$("loadKeyBtn").disabled=false}
-}
-async function forgetKey(){try{await call("/api/key",{method:"DELETE"});stopAuto();stopLearnAuto();stopDiscoverAuto();await appStatus()}catch(e){msg(e.message,true)}}
-
-function selectedIds(){return[...document.querySelectorAll(".watch-toggle:checked")].map(x=>x.value)}
-function isDeal(i){if(i.error)return false;if(i.mode==="stock")return Number(i.discount_pct||0)>=Number($("stockDiscount").value||0);return Number(i.floor_clear_profit_after_fee||0)>=Number($("minProfit").value||0)&&Number(i.net_roi_after_fee||0)>=Number($("minRoi").value||0)}
-function score(i){if(i.error)return-999;if(i.mode==="stock")return Number(i.discount_pct||0)*10;return Math.max(0,Number(i.net_roi_after_fee||0)*8+Number(i.floor_clear_profit_after_fee||0)/50000)}
-function card(i){
-  if(i.error)return`<article class="deal-card error-card"><div class="card-top"><div><h3>${i.name}</h3><span class="mode-tag">ERROR</span></div></div><p>${i.error}</p></article>`;
-  const d=isDeal(i),personal=i.mode==="stock",disc=Number(i.discount_pct||0),profit=Number(i.floor_clear_profit_after_fee||0),roi=Number(i.net_roi_after_fee||0);
-  return`<article class="deal-card ${d?"deal":""}"><div class="card-top"><div><h3>${i.name}</h3><span class="mode-tag">${personal?"PERSONAL USE":"RESALE"}</span></div><span class="deal-badge">${d?"GOOD BUY":"WATCH"}</span></div><div class="hero-price">${money.format(i.lowest)}</div><div class="hero-sub">${i.qty_floor} available at this price</div><div class="metric-list">${personal?`<div><span>Typical price</span><strong>${money.format(i.reference||0)}</strong></div><div><span>Discount</span><strong>${disc.toFixed(2)}%</strong></div>`:`<div><span>Estimated profit</span><strong>${money.format(profit)}</strong></div><div><span>ROI after fee</span><strong>${roi.toFixed(2)}%</strong></div><div><span>Total buy cost</span><strong>${money.format(i.floor_clear_capital||0)}</strong></div>`}<div><span>Next listing</span><strong>${i.next_higher?money.format(i.next_higher):"—"}</strong></div></div><button class="open-market" onclick="window.open('${i.market_url}','_blank','noopener')">Open Market</button></article>`;
-}
-
 function beep(priority="normal"){
   try{const c=new(window.AudioContext||window.webkitAudioContext)(),o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.frequency.value=priority==="high"?1150:880;g.gain.value=priority==="high"?.09:.05;o.start();o.stop(c.currentTime+(priority==="high"?.28:.16))}catch{}
 }
-function maybeSound(items){if(!$("sound").checked)return;const deals=items.filter(isDeal).sort((a,b)=>score(b)-score(a));if(!deals.length)return;const t=deals[0],k=`${t.id}:${t.lowest}:${Math.round(score(t))}`;if(k===lastAlertKey)return;lastAlertKey=k;beep("normal")}
-function renderScan(d){
-  const items=[...(d.items||[])].sort((a,b)=>score(b)-score(a)),deals=items.filter(isDeal);$("cards").innerHTML=items.length?items.map(card).join(""):`<div class="empty">Nothing selected.</div>`;$("dealCount").textContent=deals.length;
-  if(deals.length){const b=deals[0];$("bestDeal").textContent=b.name;$("bestDealSub").textContent=b.mode==="stock"?`${b.discount_pct.toFixed(2)}% below typical price`:`${money.format(b.floor_clear_profit_after_fee)} estimated profit · ${b.net_roi_after_fee.toFixed(2)}% ROI`}else{$("bestDeal").textContent="None";$("bestDealSub").textContent="Nothing meets your buy settings right now"}
-  $("lastUpdated").textContent=`Updated ${new Date(d.scanned_at*1000).toLocaleTimeString()}`;maybeSound(items);
-}
-async function scanNow(){const ids=selectedIds();if(!ids.length)return msg("Select at least one item to watch.",true);saveSettings();$("scanBtn").disabled=true;$("scanBtn").textContent="Scanning…";try{renderScan(await call(`/api/scan?ids=${encodeURIComponent(ids.join(","))}`))}catch(e){msg(e.message,true)}finally{$("scanBtn").disabled=false;$("scanBtn").textContent="Scan Now"}}
-function stopAuto(){if(timer)clearInterval(timer);timer=null;$("autoBtn").textContent="Start Auto Scan";$("autoBtn").classList.add("secondary")}
-function toggleAuto(){if(timer)return stopAuto();saveSettings();scanNow();const s=Math.max(15,Number($("interval").value||30));timer=setInterval(scanNow,s*1000);$("autoBtn").textContent=`Stop Auto Scan (${s}s)`;$("autoBtn").classList.remove("secondary")}
-
-function researchStageClass(x){return x.graduated?"research-hit":x.stage==="READY"?"research-candidate":x.stage==="BUILDING CASE"?"mild-hit":""}
-function renderLiquidity(items,requirements=""){
-  const note=$("researchRequirements");if(note&&requirements)note.innerHTML=`<strong>Graduation bar:</strong> ${requirements}. Graduates are persisted and automatically join Hidden Deals.`;
-  if(!items.length){$("liquidityRows").innerHTML=`<tr><td colspan="12" class="muted">Run samples to start building evidence.</td></tr>`;return}
-  $("liquidityRows").innerHTML=items.map(x=>{
-    if(x.error)return`<tr><td><strong>${x.name}</strong></td><td colspan="10" class="bad">${x.error}</td><td></td></tr>`;
-    const stage=x.stage||"LEARNING",badge=x.graduated?"GRADUATED":stage;
-    return`<tr class="${researchStageClass(x)}">
-      <td><strong>${x.name}</strong><br><small class="muted">Score ${Number(x.promotion_score||0).toFixed(1)}/100</small></td>
-      <td><strong>${badge}</strong></td>
-      <td>${x.lowest?money.format(x.lowest):"—"}<br><small class="muted">avg ${x.average_price?money.format(x.average_price):"—"}</small></td>
-      <td>${x.observations||0}</td>
-      <td><strong>${x.bargain_events||0}</strong><br><small class="muted">${Number(x.hit_rate||0).toFixed(1)}% hit rate</small></td>
-      <td>${x.strong_events||0}</td>
-      <td><strong>${Number(x.best_discount_pct||0).toFixed(1)}%</strong><br><small class="muted">median ${Number(x.median_discount_pct||0).toFixed(1)}%</small></td>
-      <td>${x.activity||"Learning"}<br><small class="muted">${Number(x.activity_score||0).toFixed(0)}/100</small></td>
-      <td>${Number(x.listing_churn_rate||0).toFixed(0)}%</td>
-      <td>${x.gap_events||0}<br><small class="muted">max ${Number(x.largest_gap_pct||0).toFixed(1)}%</small></td>
-      <td>${Number(x.floor_change_rate||0).toFixed(0)}%</td>
-      <td><button class="mini-btn" onclick="window.open('${x.market_url}','_blank','noopener')">Open</button></td>
-    </tr>`;
-  }).join("");
-}
-async function loadLiquidity(){
-  try{const d=await call("/api/research/status");if(Array.isArray(d.discovery_ids))discoveryIds=d.discovery_ids.map(Number);renderLiquidity(d.items||[],d.requirements||"")}catch{
-    try{const d=await call("/api/liquidity");renderLiquidity(d.items||[])}catch{}
-  }
-}
-
 function notify(title,body,url=null,priority="normal"){
   if(priority&&$("hiddenSound")?.checked)beep(priority);
   if(!("Notification" in window)||Notification.permission!=="granted")return;
   try{const n=new Notification(title,{body,tag:`torntools-${title}`,renotify:true});if(url)n.onclick=()=>{window.focus();window.open(url,"_blank","noopener");n.close()};setTimeout(()=>n.close(),15000)}catch{}
 }
-function updateNotificationButton(){const b=$("notifyBtn");if(!b)return;if(!("Notification" in window)){b.textContent="Desktop Alerts Unsupported";b.disabled=true;return}if(Notification.permission==="granted"){b.textContent="Desktop Alerts Enabled";b.classList.add("enabled-alerts")}else if(Notification.permission==="denied"){b.textContent="Desktop Alerts Blocked";b.disabled=true}else b.textContent="Enable Desktop Alerts"}
+function updateNotificationButton(){
+  const b=$("notifyBtn");if(!b)return;
+  if(!("Notification" in window)){b.textContent="Desktop Alerts Unsupported";b.disabled=true;return}
+  if(Notification.permission==="granted"){b.textContent="Desktop Alerts Enabled";b.classList.add("enabled-alerts")}
+  else if(Notification.permission==="denied"){b.textContent="Desktop Alerts Blocked";b.disabled=true}
+  else b.textContent="Enable Desktop Alerts";
+}
 async function enableNotifications(){if(!("Notification" in window))return;try{await Notification.requestPermission();updateNotificationButton()}catch{}}
 
 function cacheAge(x){if(!x.cache_timestamp)return null;return Math.max(0,Math.floor(Date.now()/1000-Number(x.cache_timestamp)))}
@@ -171,109 +130,197 @@ function recordHiddenSnapshot(x){
 }
 function freshnessInfo(x){
   const age=cacheAge(x),delay=Number(x.cache_delay||30),state=hiddenCacheState.get(Number(x.id));
-  if(!state)return{label:"TRACKING",text:"First snapshot",className:"fresh-unknown",age,delay};
+  if(!state)return{label:"TRACKING",className:"fresh-unknown",age,delay};
   const justChanged=state.changedAt&&Date.now()-state.changedAt<12000&&state.requestsSinceChange===0;
-  if(justChanged)return{label:"NEW SNAPSHOT",text:"New Torn cache detected",className:"fresh-good",age,delay};
-  if(state.requestsSinceChange>0)return{label:"REFRESH PENDING",text:"Waiting for Torn's next global snapshot",className:"fresh-recent",age,delay};
-  return{label:"TRACKING",text:"Watching cache timestamp",className:"fresh-unknown",age,delay};
+  if(justChanged)return{label:"NEW SNAPSHOT",className:"fresh-good",age,delay};
+  if(state.requestsSinceChange>0)return{label:"REFRESH PENDING",className:"fresh-recent",age,delay};
+  return{label:"TRACKING",className:"fresh-unknown",age,delay};
 }
 function renderDiscovery(items){
-  if(!items.length){$("discoverRows").innerHTML=`<tr><td colspan="9" class="muted">No discovery results yet.</td></tr>`;return}
-  const sorted=[...items].sort((a,b)=>{const pa=hiddenPriorityInfo(a.id,a),pb=hiddenPriorityInfo(b.id,b);return pb.rank-pa.rank || (b.deal_score||-1)-(a.deal_score||-1)});
-  $("discoverRows").innerHTML=sorted.map(x=>{
+  const root=$("discoverRows");if(!root)return;
+  if(!items.length){root.innerHTML='<tr><td colspan="9" class="muted">No market intelligence results yet.</td></tr>';return}
+  const sorted=[...items].sort((a,b)=>{const pa=hiddenPriorityInfo(a.id,a),pb=hiddenPriorityInfo(b.id,b);return pb.rank-pa.rank||(b.deal_score||-1)-(a.deal_score||-1)});
+  root.innerHTML=sorted.map(x=>{
     if(x.error)return`<tr><td><strong>${x.name}</strong></td><td colspan="7" class="bad">${x.error}</td><td></td></tr>`;
     const f=freshnessInfo(x),p=hiddenPriorityInfo(x.id,x),high=x.kind==="NPC FLOOR",normal=x.kind==="UNDER MARKET"&&Number(x.discount_pct||0)>=15,mild=x.kind==="UNDER MARKET"&&!normal;
     const rowClass=high?"priority-hit":normal?"research-hit":mild?"mild-hit":"";
-    const potential=x.floor_profit>0?`${money.format(x.floor_profit)} direct cash-out spread`:(x.discount_pct>=8?`${x.discount_pct.toFixed(1)}% under market`:"—");
-    const ageText=f.age===null?"Torn cache timestamp unavailable":`Torn snapshot ${f.age}s old · ${f.delay}s enforced delay`;
+    const potential=x.floor_profit>0?`${money.format(x.floor_profit)} direct cash-out spread`:(x.discount_pct>=8?`${Number(x.discount_pct).toFixed(1)}% under market`:"—");
+    const ageText=f.age===null?"cache timestamp unavailable":`${f.age}s old · ${f.delay}s cache delay`;
     const hitText=p.n?`${p.hits}/${p.n} hit snapshots · ${(p.hitRate*100).toFixed(0)}%`:`learning hit rate`;
     return`<tr class="${rowClass}"><td><strong>${x.name}</strong><br><small class="muted"><strong>${p.label}</strong> · ${hitText}</small></td><td><strong>${x.kind}</strong></td><td><span class="freshness ${f.className}">${f.label}</span><br><small class="muted">${ageText}</small></td><td>${money.format(x.lowest||0)}${x.qty_floor>1?` × ${x.qty_floor}`:""}</td><td>${x.market_value?money.format(x.market_value):"—"}</td><td>${Number(x.discount_pct||0).toFixed(1)}%</td><td>${x.hard_floor?money.format(x.hard_floor):"—"}</td><td>${potential}</td><td><button class="mini-btn" onclick="window.open('${x.market_url}','_blank','noopener')">Open</button></td></tr>`;
   }).join("");
 }
 function processHiddenAlerts(items){
-  for(const x of items){
+  for(const x of items||[]){
     if(x.error)continue;
-    let priority=null;if(x.kind==="NPC FLOOR")priority="high";else if(x.kind==="UNDER MARKET"&&Number(x.discount_pct||0)>=15)priority="normal";
+    let priority=null;
+    if(x.kind==="NPC FLOOR")priority="high";
+    else if(x.kind==="UNDER MARKET"&&Number(x.discount_pct||0)>=15)priority="normal";
     const prior=hiddenAlertState.get(Number(x.id))||null;
     if(!priority){hiddenAlertState.set(Number(x.id),null);continue}
-    const signature=`${x.cache_timestamp||0}:${x.lowest}:${x.qty_floor}:${x.kind}`;hiddenAlertState.set(Number(x.id),signature);if(prior===signature)continue;
-    const age=cacheAge(x),ageText=age===null?"Torn cache age unknown":`${age}s-old Torn snapshot`;
+    const signature=`${x.cache_timestamp||0}:${x.lowest}:${x.qty_floor}:${x.kind}`;
+    hiddenAlertState.set(Number(x.id),signature);if(prior===signature)continue;
+    const age=cacheAge(x),ageText=age===null?"cache age unknown":`${age}s-old Torn snapshot`;
     const body=x.kind==="NPC FLOOR"?`${money.format(x.lowest)} buy · ${money.format(x.hard_floor)} NPC floor · ${money.format(x.floor_profit||0)} spread · ${ageText}`:`${money.format(x.lowest)} buy · ${Number(x.discount_pct||0).toFixed(1)}% below market · ${ageText}`;
     notify(`${priority==="high"?"HIGH PRIORITY · ":""}${x.name}`,body,x.market_url,priority);
   }
 }
 
-function startCountdown(kind,seconds){
-  const isLearn=kind==="learn",state=$(isLearn?"learnState":"discoverState"),next=$(isLearn?"learnNext":"discoverNext"),progress=$(isLearn?"learnProgress":"discoverProgress");
-  if(isLearn&&learnCountdownTimer)clearInterval(learnCountdownTimer);if(!isLearn&&discoverCountdownTimer)clearInterval(discoverCountdownTimer);
-  let remaining=seconds;state.textContent=isLearn?"● Research Lab active":"● Hidden scan active";state.className="status-dot live";
-  const tick=()=>{next.textContent=`Next ${isLearn?"research sample":"check"}: ${Math.floor(remaining/60)}m ${String(remaining%60).padStart(2,"0")}s`;progress.style.width=`${Math.max(0,Math.min(100,(1-remaining/seconds)*100))}%`;if(remaining<=0)remaining=seconds;else remaining--};tick();const h=setInterval(tick,1000);if(isLearn)learnCountdownTimer=h;else discoverCountdownTimer=h;
+async function discoverNow(itemIds=null){
+  const targeted=Array.isArray(itemIds)&&itemIds.length>0;
+  const suffix=targeted?`?ids=${encodeURIComponent(itemIds.join(","))}`:"";
+  const d=await call(`/api/discover${suffix}`,{method:"POST"});
+  for(const x of d.items||[]){const changed=recordHiddenSnapshot(x);recordHiddenOutcome(x,changed);hiddenResults.set(Number(x.id),x)}
+  renderDiscovery([...hiddenResults.values()]);
+  processHiddenAlerts(d.items||[]);
+  const updated=$("discoverUpdated");if(updated)updated.textContent=`Last check ${new Date(d.scanned_at*1000).toLocaleTimeString()} · ${hiddenResults.size}/${d.pool_count||discoveryIds.length} items seen`;
+  const overall=$("intelligenceUpdated");if(overall)overall.textContent=`Market snapshot ${new Date(d.scanned_at*1000).toLocaleTimeString()}`;
+  return d;
 }
-function stopCountdown(kind){const isLearn=kind==="learn",h=isLearn?learnCountdownTimer:discoverCountdownTimer;if(h)clearInterval(h);if(isLearn)learnCountdownTimer=null;else discoverCountdownTimer=null;const state=$(isLearn?"learnState":"discoverState"),next=$(isLearn?"learnNext":"discoverNext"),progress=$(isLearn?"learnProgress":"discoverProgress");state.textContent=isLearn?"● Research idle":"● Hidden scan idle";state.className="status-dot idle";next.textContent=`Next ${isLearn?"research sample":"check"}: —`;progress.style.width="0%"}
 
-async function learnNow(){
-  $("learnBtn").disabled=true;$("learnBtn").textContent="Researching…";
+function researchStageClass(x){return x.sniper_candidate?"priority-hit":x.graduated?"research-hit":x.stage==="PROVEN MARKET"?"research-candidate":x.stage==="BUILDING CASE"?"mild-hit":""}
+function renderLiquidity(items,requirements=""){
+  const note=$("researchRequirements"),root=$("liquidityRows");
+  if(note&&requirements)note.innerHTML=`<strong>Evidence bar:</strong> ${requirements}. Items move through one shared learning/watch pipeline; Sniper promotion remains manual.`;
+  if(!root)return;
+  if(!items.length){root.innerHTML='<tr><td colspan="12" class="muted">No evidence yet.</td></tr>';return}
+  root.innerHTML=items.map(x=>{
+    if(x.error)return`<tr><td><strong>${x.name}</strong></td><td colspan="10" class="bad">${x.error}</td><td></td></tr>`;
+    const stage=x.sniper_candidate?"SNIPER CANDIDATE":x.stage||"LEARNING";
+    const trusted=x.trusted_events==null?x.bargain_events:x.trusted_events;
+    const quarantine=x.quarantined_events?` · ${x.quarantined_events} quarantined`:"";
+    return`<tr class="${researchStageClass(x)}">
+      <td><strong>${x.name}</strong><br><small class="muted">Score ${Number(x.sniper_score??x.promotion_score??0).toFixed(1)}/100 · ${x.data_quality||"learning"}</small></td>
+      <td><strong>${stage}</strong></td>
+      <td>${x.lowest?money.format(x.lowest):"—"}<br><small class="muted">baseline ${x.rolling_baseline?money.format(x.rolling_baseline):"—"}</small></td>
+      <td>${x.observations||0}</td>
+      <td><strong>${trusted||0}</strong><br><small class="muted">${x.recovered_events||0} recovered${quarantine}</small></td>
+      <td>${x.strong_events||0}</td>
+      <td><strong>${Number(x.best_edge_pct??x.best_discount_pct??0).toFixed(1)}%</strong><br><small class="muted">median ${Number(x.median_edge_pct??x.median_discount_pct??0).toFixed(1)}%</small></td>
+      <td>${x.activity||"Learning"}<br><small class="muted">${Number(x.activity_score||0).toFixed(0)}/100</small></td>
+      <td>${Number(x.listing_churn_rate||0).toFixed(0)}%</td>
+      <td>${x.gap_events||0}<br><small class="muted">max ${Number(x.largest_gap_pct||0).toFixed(1)}%</small></td>
+      <td>${Number(x.floor_change_rate||0).toFixed(0)}%</td>
+      <td><button class="mini-btn" onclick="window.open('${x.market_url}','_blank','noopener')">Open</button></td>
+    </tr>`;
+  }).join("");
+}
+
+async function loadLiquidity(){
+  try{
+    const [candidateData,researchData]=await Promise.all([
+      call("/api/sniper/candidates").catch(()=>({items:[]})),
+      call("/api/research/status").catch(()=>({items:[]}))
+    ]);
+    if(Array.isArray(candidateData.discovery_ids))discoveryIds=candidateData.discovery_ids.map(Number);
+    if(Array.isArray(researchData.discovery_ids))discoveryIds=researchData.discovery_ids.map(Number);
+    const merged=new Map();
+    for(const x of researchData.items||[])merged.set(Number(x.id),x);
+    for(const x of candidateData.items||[])merged.set(Number(x.id),{...(merged.get(Number(x.id))||{}),...x});
+    const items=[...merged.values()].sort((a,b)=>Number(b.sniper_candidate)-Number(a.sniper_candidate)||Number(b.sniper_score??b.promotion_score??0)-Number(a.sniper_score??a.promotion_score??0));
+    renderLiquidity(items,candidateData.requirements||researchData.requirements||"");
+    const updated=$("learnUpdated");if(updated)updated.textContent=`Evidence refreshed ${new Date().toLocaleTimeString()} · ${items.length} markets tracked`;
+  }catch(e){msg(`Evidence refresh failed: ${e.message}`,true)}
+}
+
+async function runBackgroundResearch(){
+  if(!intelligenceRunning)return;
   try{
     const d=await call("/api/research/sample",{method:"POST"});
     if(Array.isArray(d.discovery_ids))discoveryIds=d.discovery_ids.map(Number);
-    renderLiquidity(d.items||[],d.requirements||"");
     if((d.newly_graduated||[]).length){
       const names=d.newly_graduated.map(x=>x.name).join(", ");
-      notify("Research graduate",`${names} graduated into Hidden Deals.`,null,"normal");
+      notify("Market Intelligence promotion",`${names} proved enough evidence to join the active watch pool.`,null,"normal");
     }
-    $("learnUpdated").textContent=`Last deep sample ${new Date(d.sampled_at*1000).toLocaleTimeString()} · ${discoveryIds.length} Hidden Deals items`;
-    if(learnTimer)startCountdown("learn",120);
-  }catch(e){msg(e.message,true)}finally{$("learnBtn").disabled=false;$("learnBtn").textContent="Run Deep Research Sample"}
+    const updated=$("learnUpdated");if(updated)updated.textContent=`Background research ${new Date(d.sampled_at*1000).toLocaleTimeString()} · next in 10m`;
+    await loadLiquidity();
+  }catch(e){msg(`Background research: ${e.message}`,true)}
 }
-function stopLearnAuto(){if(learnTimer)clearInterval(learnTimer);learnTimer=null;$("learnAutoBtn").textContent="Start Research Lab";$("learnAutoBtn").classList.add("secondary");stopCountdown("learn")}
-function toggleLearnAuto(){if(learnTimer)return stopLearnAuto();learnNow();learnTimer=setInterval(learnNow,120000);$("learnAutoBtn").textContent="Stop Research Lab (2m)";$("learnAutoBtn").classList.remove("secondary");startCountdown("learn",120)}
 
-async function discoverNow(itemIds=null){
-  const isAuto=Array.isArray(itemIds)&&itemIds.length>0;
-  if(!isAuto){$("discoverBtn").disabled=true;$("discoverBtn").textContent="Scanning full pool…"}
-  try{
-    const suffix=isAuto?`?ids=${encodeURIComponent(itemIds.join(","))}`:"",d=await call(`/api/discover${suffix}`,{method:"POST"});
-    for(const x of d.items||[]){const changed=recordHiddenSnapshot(x);recordHiddenOutcome(x,changed);hiddenResults.set(Number(x.id),x)}
-    renderDiscovery([...hiddenResults.values()]);processHiddenAlerts(d.items||[]);
-    $("discoverUpdated").textContent=`Last check ${new Date(d.scanned_at*1000).toLocaleTimeString()} · ${hiddenResults.size}/${d.pool_count||discoveryIds.length} items seen`;
-  }catch(e){msg(e.message,true)}finally{if(!isAuto){$("discoverBtn").disabled=false;$("discoverBtn").textContent="Scan Full Hidden Pool"}}
-}
 function hiddenNextDue(id){
   const now=Date.now(),x=hiddenResults.get(Number(id)),s=hiddenStat(id),c=hiddenCacheState.get(Number(id)),p=hiddenPriorityInfo(id,x);
   if(!x||!c)return 0;
-  const delay=Math.max(1,Number(x.cache_delay||30))*1000,cacheTs=Number(x.cache_timestamp||0)*1000;if(cacheTs&&now<cacheTs+delay)return cacheTs+delay+250;
+  const delay=Math.max(1,Number(x.cache_delay||30))*1000,cacheTs=Number(x.cache_timestamp||0)*1000;
+  if(cacheTs&&now<cacheTs+delay)return cacheTs+delay+250;
   const pending=Number(c.requestsSinceChange||0)>0,hardFloor=!!x.hard_floor;
   const pendingIntervals={5:4000,4:5000,3:8000,2:11000,1:15000},normalIntervals={5:6000,4:8000,3:14000,2:22000,1:35000};
-  let gap=(pending?pendingIntervals:normalIntervals)[p.rank]||12000;if(hardFloor)gap=Math.min(gap,pending?7000:12000);const maxGap=hardFloor?20000:45000;
+  let gap=(pending?pendingIntervals:normalIntervals)[p.rank]||12000;
+  if(hardFloor)gap=Math.min(gap,pending?7000:12000);
+  const maxGap=hardFloor?20000:45000;
   return Math.min(Number(s.lastRequestAt||0)+gap,Number(s.lastRequestAt||0)+maxGap);
 }
 function chooseNextHiddenId(){
-  if(!discoveryIds.length)return null;const now=Date.now();let best=null,bestScore=-Infinity;
+  if(!discoveryIds.length)return null;
+  const now=Date.now();let best=null,bestScore=-Infinity;
   for(const rawId of discoveryIds){
-    const id=Number(rawId),x=hiddenResults.get(id),s=hiddenStat(id),p=hiddenPriorityInfo(id,x),due=hiddenNextDue(id);const since=now-Number(s.lastRequestAt||0),hardFloor=!!x?.hard_floor,maxWait=hardFloor?20000:45000;
-    if(!x)return id;if(now<due&&since<maxWait)continue;
+    const id=Number(rawId),x=hiddenResults.get(id),s=hiddenStat(id),p=hiddenPriorityInfo(id,x),due=hiddenNextDue(id);
+    const since=now-Number(s.lastRequestAt||0),hardFloor=!!x?.hard_floor,maxWait=hardFloor?20000:45000;
+    if(!x)return id;
+    if(now<due&&since<maxWait)continue;
     const overdue=Math.max(0,(now-due)/1000),starve=Math.max(0,(since-(hardFloor?12000:30000))/1000),currentBonus=isStrongHiddenHit(x)?30:isHiddenHit(x)?18:0,floorBonus=hardFloor?28:0;
-    const rankScore=p.rank*20+overdue+starve*2+currentBonus+floorBonus;if(rankScore>bestScore){bestScore=rankScore;best=id}
-  }return best;
+    const rankScore=p.rank*20+overdue+starve*2+currentBonus+floorBonus;
+    if(rankScore>bestScore){bestScore=rankScore;best=id}
+  }
+  return best;
 }
-function updateHiddenSchedulerStatus(nextId=null){
-  if(!discoverRunning)return;const hot=discoveryIds.filter(id=>hiddenPriorityInfo(id,hiddenResults.get(Number(id))).label==="HOT").length;
-  $("discoverState").textContent=`● Adaptive Hidden scan · ${hot} hot item${hot===1?"":"s"}`;$("discoverState").className="status-dot live";
-  if(nextId){const x=hiddenResults.get(Number(nextId)),p=hiddenPriorityInfo(nextId,x);$("discoverNext").textContent=`Next priority: ${x?.name||`Item ${nextId}`} · ${p.label}${x?.hard_floor?" · NPC floor protected":""}`}
-  else $("discoverNext").textContent="Waiting for the next useful cache window…";
+function updateIntelligenceStatus(nextId=null){
+  const state=$("intelligenceState"),next=$("intelligenceNext");if(!state||!next)return;
+  if(!intelligenceRunning){state.textContent="● Intelligence idle";state.className="status-dot idle";next.textContent="Next check: —";return}
+  const hot=discoveryIds.filter(id=>hiddenPriorityInfo(id,hiddenResults.get(Number(id))).label==="HOT").length;
+  state.textContent=`● Market Intelligence active · ${hot} hot item${hot===1?"":"s"}`;state.className="status-dot live";
+  if(nextId){const x=hiddenResults.get(Number(nextId)),p=hiddenPriorityInfo(nextId,x);next.textContent=`Next priority: ${x?.name||`Item ${nextId}`} · ${p.label}${x?.hard_floor?" · NPC floor protected":""}`}
+  else next.textContent="Waiting for the next useful Torn cache window…";
 }
-async function runDiscoveryScheduler(){
-  if(!discoverRunning)return;if(discoverRequestRunning){discoverTimer=setTimeout(runDiscoveryScheduler,DISCOVER_ITEM_SECONDS*1000);return}
-  const id=chooseNextHiddenId();updateHiddenSchedulerStatus(id);if(id!==null){discoverRequestRunning=true;try{await discoverNow([id])}finally{discoverRequestRunning=false}}
-  if(discoverRunning)discoverTimer=setTimeout(runDiscoveryScheduler,DISCOVER_ITEM_SECONDS*1000);
+async function runIntelligenceScheduler(){
+  if(!intelligenceRunning)return;
+  if(intelligenceRequestRunning){intelligenceTimer=setTimeout(runIntelligenceScheduler,INTELLIGENCE_TICK_MS);return}
+  const id=chooseNextHiddenId();updateIntelligenceStatus(id);
+  if(id!==null){
+    intelligenceRequestRunning=true;
+    try{await discoverNow([id])}catch(e){msg(`Market Intelligence: ${e.message}`,true)}finally{intelligenceRequestRunning=false}
+  }
+  if(intelligenceRunning)intelligenceTimer=setTimeout(runIntelligenceScheduler,INTELLIGENCE_TICK_MS);
 }
-function stopDiscoverAuto(){discoverRunning=false;discoverRequestRunning=false;if(discoverTimer)clearTimeout(discoverTimer);discoverTimer=null;$("discoverAutoBtn").textContent="Start Smart Hidden Scan";$("discoverAutoBtn").classList.add("secondary");stopCountdown("discover")}
-function toggleDiscoverAuto(){
-  if(discoverRunning)return stopDiscoverAuto();discoverRunning=true;discoverBatchIndex=0;$("discoverAutoBtn").textContent="Stop Adaptive Hidden Scan";$("discoverAutoBtn").classList.remove("secondary");
-  $("discoverState").textContent="● Adaptive Hidden scan · learning priorities";$("discoverState").className="status-dot live";$("discoverNext").textContent="NPC-floor items stay prioritized; research graduates are now part of this same pool.";$("discoverProgress").style.width="0%";runDiscoveryScheduler();
+function startMarketIntelligence(){
+  if(intelligenceRunning)return;
+  intelligenceRunning=true;
+  localStorage.setItem(INTELLIGENCE_AUTOSTART_KEY,"1");
+  const btn=$("intelligenceToggleBtn");if(btn){btn.textContent="Stop Market Intelligence";btn.classList.remove("secondary")}
+  const progress=$("intelligenceProgress");if(progress)progress.style.width="100%";
+  updateIntelligenceStatus();
+  runIntelligenceScheduler();
+  intelligenceResearchKickoff=setTimeout(()=>{if(intelligenceRunning)runBackgroundResearch()},20000);
+  intelligenceResearchTimer=setInterval(()=>{if(intelligenceRunning)runBackgroundResearch()},BACKGROUND_RESEARCH_MS);
+}
+function stopMarketIntelligence(){
+  intelligenceRunning=false;
+  intelligenceRequestRunning=false;
+  localStorage.setItem(INTELLIGENCE_AUTOSTART_KEY,"0");
+  if(intelligenceTimer)clearTimeout(intelligenceTimer);intelligenceTimer=null;
+  if(intelligenceResearchKickoff)clearTimeout(intelligenceResearchKickoff);intelligenceResearchKickoff=null;
+  if(intelligenceResearchTimer)clearInterval(intelligenceResearchTimer);intelligenceResearchTimer=null;
+  const btn=$("intelligenceToggleBtn");if(btn){btn.textContent="Start Market Intelligence";btn.classList.add("secondary")}
+  const progress=$("intelligenceProgress");if(progress)progress.style.width="0%";
+  updateIntelligenceStatus();
+}
+function toggleMarketIntelligence(){if(intelligenceRunning)stopMarketIntelligence();else startMarketIntelligence()}
+
+async function refreshBrokerStatus(){
+  try{
+    const d=await call("/api/request-broker/status");
+    const reused=Number(d.estimated_requests_avoided||0);
+    if($("brokerUpstream"))$("brokerUpstream").textContent=Number(d.upstream_requests||0).toLocaleString();
+    if($("brokerReused"))$("brokerReused").textContent=reused.toLocaleString();
+    if($("brokerReusePct"))$("brokerReusePct").textContent=`${Number(d.reuse_pct||0).toFixed(1)}%`;
+  }catch{}
 }
 
-["interval","minProfit","minRoi","stockDiscount","sound","hiddenSound"].forEach(id=>document.addEventListener("change",e=>{if(e.target.id===id)saveSettings()}));
-$("key").addEventListener("keydown",e=>{if(e.key==="Enter")loadKey()});
-setInterval(()=>{if(hiddenResults.size)renderDiscovery([...hiddenResults.values()])},1000);
-loadSavedSettings();loadHiddenPriorityStats();appStatus();
+window.addEventListener("DOMContentLoaded",async()=>{
+  loadHiddenPriorityStats();
+  const key=$("key");if(key)key.addEventListener("keydown",e=>{if(e.key==="Enter")loadKey()});
+  const sound=$("hiddenSound");if(sound){const saved=localStorage.getItem("torntools.hiddenSound");if(saved!==null)sound.checked=saved==="1";sound.addEventListener("change",()=>localStorage.setItem("torntools.hiddenSound",sound.checked?"1":"0"))}
+  setInterval(()=>{if(hiddenResults.size)renderDiscovery([...hiddenResults.values()])},1000);
+  brokerTimer=setInterval(refreshBrokerStatus,15000);
+  await appStatus();
+  if(localStorage.getItem(INTELLIGENCE_AUTOSTART_KEY)==="1")startMarketIntelligence();
+});
