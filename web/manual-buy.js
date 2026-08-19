@@ -8,6 +8,39 @@
     else el.textContent = text;
   }
 
+  function intelligenceStatusText(text, isError) {
+    const el = document.getElementById('intelligenceUpdated');
+    if (!el) return;
+    if (isError) el.innerHTML = `<span class="bad">${text}</span>`;
+    else el.textContent = text;
+  }
+
+  function installMarketIntelligenceButton() {
+    const btn = document.getElementById('intelligenceToggleBtn');
+    if (!btn || btn.__ttMarketIntelBound) return;
+    btn.__ttMarketIntelBound = true;
+
+    // Remove the inline handler so there is exactly one click path. This makes
+    // the condensed Market Intelligence control independent of global-window
+    // inline-handler quirks while leaving the scheduler itself untouched.
+    btn.removeAttribute('onclick');
+    btn.addEventListener('click', () => {
+      try {
+        if (typeof toggleMarketIntelligence !== 'function') {
+          throw new Error('Market Intelligence control did not load');
+        }
+        toggleMarketIntelligence();
+        intelligenceStatusText(
+          (typeof intelligenceRunning !== 'undefined' && intelligenceRunning)
+            ? 'Market Intelligence started.'
+            : 'Market Intelligence stopped.'
+        );
+      } catch (e) {
+        intelligenceStatusText(`Could not toggle Market Intelligence: ${e.message}`, true);
+      }
+    });
+  }
+
   async function directBuyOne(itemId) {
     const id = Number(itemId);
     const target = sniperTargets.get(id);
@@ -22,9 +55,6 @@
       return;
     }
 
-    // Open the exact Torn market page directly from the player's click. The
-    // localhost intent is short-lived; the userscript must independently verify
-    // item, price and single-unit state before invoking one native Buy control.
     window.open(target.market_url, '_blank');
     statusText(`BUY 1 requested for ${target.name} at ${money.format(price)}. Torn will verify the live listing; normal confirmation remains manual.`);
     try {
@@ -87,8 +117,7 @@
 
   function install() {
     installStyle();
-    // Wrap the already-stable renderer rather than adding a separate polling
-    // loop. Every normal Sniper render simply gets one lightweight UI pass.
+    installMarketIntelligenceButton();
     if (typeof renderSniperTargets === 'function' && !renderSniperTargets.__ttManualBuyWrapped) {
       const original = renderSniperTargets;
       const wrapped = function () {
