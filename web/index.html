@@ -9,7 +9,7 @@
 <body>
 <main>
   <header class="topbar">
-    <div><div class="eyebrow">TORNTOOLS · v0.4.4</div><h1>TornTools</h1><p>Market intelligence, evidence-driven sniping, equipment pricing, and mug research.</p></div>
+    <div><div class="eyebrow">TORNTOOLS · v0.5.5</div><h1>TornTools</h1><p>Market intelligence, evidence-driven sniping, equipment pricing, bazaar monitoring, and mug research.</p></div>
     <span id="status" class="pill">Checking…</span>
   </header>
 
@@ -22,6 +22,7 @@
   <nav class="tool-tabs" aria-label="TornTools sections">
     <button id="tabScanner" class="tool-tab active" onclick="switchToolTab('scanner')">Market Intelligence</button>
     <button id="tabEquipment" class="tool-tab" onclick="switchToolTab('equipment')">Equipment Checker</button>
+    <button class="tool-tab" onclick="location.href='/static/bazaar-watch.html'">Bazaar Watch</button>
     <button class="tool-tab" onclick="location.href='/static/mug-scout.html'">Mug Scout</button>
   </nav>
 
@@ -45,7 +46,7 @@
     </section>
 
     <section class="panel">
-      <div class="section-head"><div><h2>Market Intelligence</h2><p class="muted">One adaptive engine now handles discovery, learning, evidence collection, and actionable hidden deals.</p></div><button id="notifyBtn" class="secondary mini-btn" onclick="enableNotifications()">Enable Desktop Alerts</button></div>
+      <div class="section-head"><div><h2>Market Intelligence</h2><p class="muted">One adaptive engine handles discovery, learning, evidence collection, and actionable hidden deals.</p></div><button id="notifyBtn" class="secondary mini-btn" onclick="enableNotifications()">Enable Desktop Alerts</button></div>
       <div class="toolbar">
         <button id="intelligenceToggleBtn" class="secondary" onclick="toggleMarketIntelligence()">Start Market Intelligence</button>
         <button class="secondary" onclick="loadLiquidity(); refreshBrokerStatus()">Refresh Evidence</button>
@@ -60,10 +61,8 @@
         <article class="summary-card"><span>Requests reused</span><strong id="brokerReused">0</strong><small>duplicate calls avoided</small></article>
         <article class="summary-card"><span>Reuse rate</span><strong id="brokerReusePct">0%</strong><small>shared response efficiency</small></article>
       </div>
-
       <div class="section-head" style="margin-top:10px"><div><h3 style="margin:0">Live Opportunities</h3><p class="muted">Current market state for the adaptive watch pool.</p></div><span id="discoverUpdated" class="muted">No checks yet</span></div>
       <div class="table-wrap"><table class="research-table"><thead><tr><th>Item</th><th>Signal</th><th>Cache state</th><th>Buy</th><th>Market value</th><th>Discount</th><th>NPC floor</th><th>Potential</th><th></th></tr></thead><tbody id="discoverRows"><tr><td colspan="9" class="muted">Start Market Intelligence to begin checking the adaptive pool.</td></tr></tbody></table></div>
-
       <div class="section-head" style="margin-top:24px"><div><h3 style="margin:0">Evidence & Learning</h3><p class="muted">The same engine uses accumulated snapshots to decide which markets deserve more attention.</p></div><span id="learnUpdated" class="muted">Evidence not refreshed yet</span></div>
       <div id="researchRequirements" class="research-note"><strong>Evidence model:</strong> independent bargain events, recoveries, market activity, listing churn, floor changes, gap behavior, and trusted edge quality.</div>
       <div class="table-wrap"><table class="research-table"><thead><tr><th>Item / score</th><th>Stage</th><th>Current</th><th>Samples</th><th>Bargain hits</th><th>Strong hits</th><th>Discount history</th><th>Activity</th><th>Listing churn</th><th>Gap behavior</th><th>Floor changes</th><th></th></tr></thead><tbody id="liquidityRows"><tr><td colspan="12" class="muted">Evidence will populate from the shared market history.</td></tr></tbody></table></div>
@@ -72,26 +71,15 @@
 
   <div id="equipmentView" hidden>
     <section class="panel">
-      <div class="section-head">
-        <div><h2>Your Equipment</h2><p class="muted">Loads weapons and armor directly from your Torn inventory using the API key already connected to TornTools.</p></div>
-        <button id="eqInventoryBtn" class="secondary" onclick="loadEquipmentInventory(true)">Refresh Inventory</button>
-      </div>
+      <div class="section-head"><div><h2>Your Equipment</h2><p class="muted">Loads weapons and armor directly from your Torn inventory using the API key already connected to TornTools.</p></div><button id="eqInventoryBtn" class="secondary" onclick="loadEquipmentInventory(true)">Refresh Inventory</button></div>
       <div id="eqInventoryStatus" class="research-note">Inventory has not been loaded yet.</div>
-      <div class="toolbar" style="margin-bottom:12px">
-        <select id="eqCategoryFilter" onchange="applyInventoryFilters()"><option value="all">All categories</option></select>
-        <select id="eqStatusFilter" onchange="applyInventoryFilters()"><option value="all">Plain + RW</option><option value="plain">Plain only</option><option value="rw">RW / bonused only</option><option value="equipped">Equipped only</option></select>
-        <select id="eqSort" onchange="applyInventoryFilters()"><option value="category">Sort: Category</option><option value="name">Sort: Name</option><option value="quality_desc">Sort: Quality high → low</option><option value="quality_asc">Sort: Quality low → high</option></select>
-        <input id="eqSearch" type="search" placeholder="Search equipment…" oninput="applyInventoryFilters()"><div class="spacer"></div><span id="eqVisibleCount" class="muted"></span>
-      </div>
+      <div class="toolbar" style="margin-bottom:12px"><select id="eqCategoryFilter" onchange="applyInventoryFilters()"><option value="all">All categories</option></select><select id="eqStatusFilter" onchange="applyInventoryFilters()"><option value="all">Plain + RW</option><option value="plain">Plain only</option><option value="rw">RW / bonused only</option><option value="equipped">Equipped only</option></select><select id="eqSort" onchange="applyInventoryFilters()"><option value="category">Sort: Category</option><option value="name">Sort: Name</option><option value="quality_desc">Sort: Quality high → low</option><option value="quality_asc">Sort: Quality low → high</option></select><input id="eqSearch" type="search" placeholder="Search equipment…" oninput="applyInventoryFilters()"><div class="spacer"></div><span id="eqVisibleCount" class="muted"></span></div>
       <div class="table-wrap"><table class="research-table"><thead><tr><th>Item</th><th>Category</th><th>Quality</th><th>Stats</th><th>Type</th><th>Status</th><th></th></tr></thead><tbody id="eqInventoryRows"><tr><td colspan="7" class="muted">Open this tab to load your equipment.</td></tr></tbody></table></div>
     </section>
-
     <section id="equipmentCheckerPanel" class="panel">
       <div class="section-head"><div><h2>Equipment Checker</h2><p class="muted">Check whether a plain white weapon or armor roll is worth putting on the market instead of vendoring it.</p></div></div>
       <div class="research-note">Click <strong>Use</strong> above to fill these fields from your inventory, or enter them manually. TornTools compares only plain listings with no RW bonuses or rarity. Torn's base vendor/NPC sell value and standard market value are fetched automatically when available.</div>
-      <div class="equipment-grid">
-        <label>Item ID<input id="eqItemId" type="number" min="1" step="1" placeholder="e.g. Benelli item ID"></label><label>Quality %<input id="eqQuality" type="number" min="0" max="100" step="0.01" placeholder="e.g. 67.42"></label><label>Damage<input id="eqDamage" type="number" min="0" step="0.01" placeholder="weapon only"></label><label>Accuracy<input id="eqAccuracy" type="number" min="0" step="0.01" placeholder="weapon only"></label><label>Armor<input id="eqArmor" type="number" min="0" step="0.01" placeholder="armor only"></label><label>Vendor sell value<input id="eqVendor" type="number" min="0" step="1" placeholder="auto-filled when available"></label>
-      </div>
+      <div class="equipment-grid"><label>Item ID<input id="eqItemId" type="number" min="1" step="1" placeholder="e.g. Benelli item ID"></label><label>Quality %<input id="eqQuality" type="number" min="0" max="100" step="0.01" placeholder="e.g. 67.42"></label><label>Damage<input id="eqDamage" type="number" min="0" step="0.01" placeholder="weapon only"></label><label>Accuracy<input id="eqAccuracy" type="number" min="0" step="0.01" placeholder="weapon only"></label><label>Armor<input id="eqArmor" type="number" min="0" step="0.01" placeholder="armor only"></label><label>Vendor sell value<input id="eqVendor" type="number" min="0" step="1" placeholder="auto-filled when available"></label></div>
       <div class="toolbar"><button id="eqCheckBtn" onclick="checkEquipment()">Check Equipment</button><button class="secondary" onclick="clearEquipment()">Clear</button><div class="spacer"></div><span id="eqSelected" class="muted">No inventory item selected.</span></div>
       <div id="eqSelectedMarket" class="research-note">Torn market value: —</div>
     </section>
