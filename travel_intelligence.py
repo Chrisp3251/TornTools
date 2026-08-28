@@ -8,15 +8,19 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
+import app as core_app
 import bazaar_watch_runtime
 
 app = bazaar_watch_runtime.app
 
 STOCK_URL = "https://torn-intel.com/api/v1/public/foreign-stock"
 HISTORY_URL = "https://torn-intel.com/api/v1/public/foreign-stock/history"
-USER_AGENT = "TornTools-Local/0.6 TravelIntelligence"
+TORN_USER_URL = "https://api.torn.com/user/"
+USER_AGENT = "TornTools-Local/0.6.1 TravelIntelligence"
 CACHE_SECONDS = 20
+TRAVEL_CACHE_SECONDS = 12
 _stock_cache: dict[str, Any] = {"at": 0.0, "data": None}
+_travel_cache: dict[str, Any] = {"at": 0.0, "data": None}
 
 # Approximate one-way minutes with a Private Island airstrip. The UI exposes a
 # speed multiplier so the ranking can be calibrated to the player's actual trip.
@@ -29,6 +33,8 @@ COUNTRY_NAMES = {
     "uk": "United Kingdom", "arg": "Argentina", "swi": "Switzerland", "jap": "Japan",
     "chi": "China", "uae": "UAE", "saf": "South Africa",
 }
+COUNTRY_CODES = {v.lower(): k for k, v in COUNTRY_NAMES.items()}
+COUNTRY_CODES.update({"united arab emirates": "uae", "south africa": "saf", "cayman islands": "cay"})
 
 
 def _get_json(url: str) -> dict:
@@ -43,6 +49,82 @@ def _stock() -> dict:
         return _stock_cache["data"]
     data = _get_json(STOCK_URL)
     _stock_cache.update(at=now, data=data)
+    return data
+
+
+def _country_code(name: Any) -> str | None:
+    value = str(name or "").strip().lower()
+    if not value or value in {"torn", "torn city"}:
+        return None
+    if value in COUNTRY_CODES:
+        return COUNTRY_CODES[value]
+    for code, label in COUNTRY_NAMES.items():
+        if value == label.lower():
+            return code
+    return None
+
+
+def _travel_state() -> dict:
+    now = time.time()
+    if _travel_cache["data"] is not None and now - float(_travel_cache["at"]) < TRAVEL_CACHE_SECONDS:
+        return _travel_cache["data"]
+    key = core_app._api_key
+    if not key:
+        data = {"available": False, "state": "UNKNOWN", "reason": "TORN_API_KEY is not loaded"}
+        _travel_cache.update(at=now, data=data)
+        return data
+    q = urllib.parse.urlencode({"selections": "travel,basic", "key": key})
+    try:
+        raw = _get_json(f"{TORN_USER_URL}?{q}")
+    except Exception as exc:
+        data = {"available": False, "state": "UNKNOWN", "reason": f"Could not read Torn travel state: {exc}"}
+        _travel_cache.update(at=now, data=data)
+        return data
+    if isinstance(raw.get("error"), dict):
+        err = raw["error"]
+        data = {"available": False, "state": "UNKNOWN", "reason": err.get("error") or err.get("message") or "Torn API error"}
+        _travel_cache.update(at=now, data=data)
+        return data
+
+    travel = raw.get("travel") if isinstance(raw.get("travel"), dict) else {}
+    status = raw.get("status") if isinstance(raw.get("status"), dict) else {}
+    state_raw = str(status.get("state") or "").strip()
+    description = str(status.get("description") or "").strip()
+    destination_name = str(travel.get("destination") or "").strip()
+    destination_code = _country_code(destination_name)
+    timestamp = int(travel.get("timestamp") or 0)
+    departed = int(travel.get("departed") or 0)
+    time_left = max(0, int(travel.get("time_left") or 0))
+    method = travel.get("method")
+    desc_lower = description.lower()
+    is_return = "returning to torn" in desc_lower or "returning" in desc_lower
+    is_traveling = state_raw.lower() == "traveling" or time_left > 0
+    is_abroad = state_raw.lower() == "abroad"
+
+    if is_traveling:
+        state = "FLYING_HOME" if is_return else "FLYING_OUT"
+    elif is_abroad:
+        state = "ABROAD"
+    else:
+        state = "IN_TORN"
+
+    data = {
+        "available": True,
+        "state": state,
+        "status_state": state_raw,
+        "description": description,
+        "destination": destination_name or None,
+        "destination_code": destination_code,
+        "method": method,
+        "timestamp": timestamp or None,
+        "departed": departed or None,
+        "time_left": time_left,
+        "is_return": is_return,
+        "is_traveling": is_traveling,
+        "is_abroad": is_abroad,
+        "checked_at": int(now),
+    }
+    _travel_cache.update(at=now, data=data)
     return data
 
 
@@ -124,7 +206,6 @@ def _optimize_country(country: dict, capacity: int, speed: float, sale_fee: floa
     fill = capacity - remaining
     confidence = weighted_conf / max(1, fill)
     profit_hour = expected_profit / max(1 / 60, trip_minutes / 60.0)
-    # Ranking rewards realizable hourly profit, full loads, and confidence.
     score = profit_hour * (0.70 + 0.30 * fill / capacity) * (0.72 + 0.28 * confidence)
     return {
         "country": code, "country_name": COUNTRY_NAMES.get(code, code.upper()),
@@ -138,19 +219,30 @@ def _optimize_country(country: dict, capacity: int, speed: float, sale_fee: floa
     }
 
 
+@app.get("/api/travel-intelligence/state")
+def travel_state():
+    return _travel_state()
+
+
 @app.get("/api/travel-intelligence")
 def travel_intelligence(capacity: int = 17, speed: float = 1.0, sale_fee: float = 0.05):
     capacity = max(1, min(100, int(capacity)))
     speed = max(.25, min(3.0, float(speed)))
     sale_fee = max(0.0, min(.25, float(sale_fee)))
     data = _stock()
+    travel = _travel_state()
     trips = [x for x in (_optimize_country(c, capacity, speed, sale_fee) for c in data.get("countries") or []) if x]
     trips.sort(key=lambda x: x["score"], reverse=True)
+    destination_trip = None
+    dest_code = travel.get("destination_code") if travel.get("available") else None
+    if dest_code:
+        destination_trip = next((x for x in trips if x.get("country") == dest_code), None)
     return {
         "generated_at": data.get("generatedAt"), "source": data.get("source"),
         "capacity": capacity, "speed": speed, "sale_fee": sale_fee,
         "best": trips[0] if trips else None, "trips": trips,
-        "model": "TT-Travel-v1", "note": "Adjusted profit is conservative and confidence-weighted; it is not a guaranteed sale price.",
+        "travel": travel, "destination_trip": destination_trip,
+        "model": "TT-Travel-v1.1", "note": "Adjusted profit is conservative and confidence-weighted; it is not a guaranteed sale price.",
     }
 
 
