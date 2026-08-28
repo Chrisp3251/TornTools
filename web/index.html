@@ -9,7 +9,7 @@
 <body>
 <main>
   <header class="topbar">
-    <div><div class="eyebrow">TORNTOOLS · v0.5.5</div><h1>TornTools</h1><p>Market intelligence, evidence-driven sniping, equipment pricing, bazaar monitoring, and mug research.</p></div>
+    <div><div class="eyebrow">TORNTOOLS · v0.6.0</div><h1>TornTools</h1><p>Market intelligence, travel optimization, evidence-driven sniping, equipment pricing, bazaar monitoring, and mug research.</p></div>
     <span id="status" class="pill">Checking…</span>
   </header>
 
@@ -22,6 +22,7 @@
   <nav class="tool-tabs" aria-label="TornTools sections">
     <button id="tabScanner" class="tool-tab active" onclick="switchToolTab('scanner')">Market Intelligence</button>
     <button id="tabEquipment" class="tool-tab" onclick="switchToolTab('equipment')">Equipment Checker</button>
+    <button class="tool-tab" onclick="location.href='/static/travel-intelligence.html'">Travel Intelligence</button>
     <button class="tool-tab" onclick="location.href='/static/bazaar-watch.html'">Bazaar Watch</button>
     <button class="tool-tab" onclick="location.href='/static/mug-scout.html'">Mug Scout</button>
   </nav>
@@ -29,38 +30,21 @@
   <div id="scannerView">
     <section class="panel">
       <div class="section-head"><div><h2>Sniper Watchlist</h2><p class="muted">Explicit max-buy targets get the fastest cache-aware monitoring. Market Intelligence and Sniper share the same Torn market responses whenever possible.</p></div><span id="sniperCount" class="pill">Loading…</span></div>
-      <div class="toolbar">
-        <button id="sniperToggleBtn" class="secondary" onclick="toggleSniperWatch()">Start Sniper Watch</button>
-        <button class="secondary" onclick="window.open('/static/torn-sniper.user.js','_blank','noopener')">Open / Install Live Userscript</button>
-        <div class="spacer"></div><span id="sniperStatus" class="muted">Loading sniper targets…</span>
-      </div>
+      <div class="toolbar"><button id="sniperToggleBtn" class="secondary" onclick="toggleSniperWatch()">Start Sniper Watch</button><button class="secondary" onclick="window.open('/static/torn-sniper.user.js','_blank','noopener')">Open / Install Live Userscript</button><div class="spacer"></div><span id="sniperStatus" class="muted">Loading sniper targets…</span></div>
       <div class="scan-status"><span id="sniperState" class="status-dot idle">● Sniper idle</span><span id="sniperNext" class="muted">Next sniper check: —</span></div>
-      <div class="research-note"><strong>Purpose:</strong> Sniper is only for items you explicitly arm. It does not need its own separate market-learning system; it consumes the same evidence and shared cache as Market Intelligence.</div>
-      <div class="equipment-grid" style="margin-bottom:12px">
-        <label>Item ID<input id="sniperItemId" type="number" min="1" step="1" placeholder="e.g. 1086"></label>
-        <label>Name<input id="sniperName" type="text" placeholder="e.g. Driver's License"></label>
-        <label>Max buy price<input id="sniperMaxPrice" type="number" min="1" step="1" placeholder="e.g. 4999"></label>
-      </div>
+      <div class="research-note"><strong>Purpose:</strong> Sniper is only for items you explicitly arm. It consumes the same evidence and shared cache as Market Intelligence.</div>
+      <div class="equipment-grid" style="margin-bottom:12px"><label>Item ID<input id="sniperItemId" type="number" min="1" step="1" placeholder="e.g. 1086"></label><label>Name<input id="sniperName" type="text" placeholder="e.g. Driver's License"></label><label>Max buy price<input id="sniperMaxPrice" type="number" min="1" step="1" placeholder="e.g. 4999"></label></div>
       <div class="toolbar"><button onclick="saveSniperTarget()">Add / Update Target</button><span class="muted">Promotion remains manual even when the evidence model marks an item as a Sniper Candidate.</span></div>
       <div class="table-wrap"><table class="research-table"><thead><tr><th>Target</th><th>Max buy</th><th>Current API price</th><th>Status</th><th>Buy / market</th><th>Actions</th></tr></thead><tbody id="sniperRows"><tr><td colspan="6" class="muted">Loading sniper targets…</td></tr></tbody></table></div>
     </section>
 
     <section class="panel">
       <div class="section-head"><div><h2>Market Intelligence</h2><p class="muted">One adaptive engine handles discovery, learning, evidence collection, and actionable hidden deals.</p></div><button id="notifyBtn" class="secondary mini-btn" onclick="enableNotifications()">Enable Desktop Alerts</button></div>
-      <div class="toolbar">
-        <button id="intelligenceToggleBtn" class="secondary" onclick="toggleMarketIntelligence()">Start Market Intelligence</button>
-        <button class="secondary" onclick="loadLiquidity(); refreshBrokerStatus()">Refresh Evidence</button>
-        <label class="check"><input id="hiddenSound" type="checkbox" checked> Alert sound</label>
-        <div class="spacer"></div><span id="intelligenceUpdated" class="muted">Not started</span>
-      </div>
+      <div class="toolbar"><button id="intelligenceToggleBtn" class="secondary" onclick="toggleMarketIntelligence()">Start Market Intelligence</button><button class="secondary" onclick="loadLiquidity(); refreshBrokerStatus()">Refresh Evidence</button><label class="check"><input id="hiddenSound" type="checkbox" checked> Alert sound</label><div class="spacer"></div><span id="intelligenceUpdated" class="muted">Not started</span></div>
       <div class="scan-status"><span id="intelligenceState" class="status-dot idle">● Intelligence idle</span><span id="intelligenceNext" class="muted">Next check: —</span></div>
       <div class="progress-track"><div id="intelligenceProgress" class="progress-fill"></div></div>
       <div class="research-note"><strong>Single pipeline:</strong> LEARNING → BUILDING CASE → PROVEN MARKET → ACTIVE WATCH → SNIPER CANDIDATE. The engine prioritizes useful cache windows, samples unproven research markets slowly in the background, and avoids duplicate market calls through the shared request broker.</div>
-      <div class="summary-grid" style="margin:12px 0 18px">
-        <article class="summary-card"><span>Upstream market calls</span><strong id="brokerUpstream">0</strong><small>actual Torn requests</small></article>
-        <article class="summary-card"><span>Requests reused</span><strong id="brokerReused">0</strong><small>duplicate calls avoided</small></article>
-        <article class="summary-card"><span>Reuse rate</span><strong id="brokerReusePct">0%</strong><small>shared response efficiency</small></article>
-      </div>
+      <div class="summary-grid" style="margin:12px 0 18px"><article class="summary-card"><span>Upstream market calls</span><strong id="brokerUpstream">0</strong><small>actual Torn requests</small></article><article class="summary-card"><span>Requests reused</span><strong id="brokerReused">0</strong><small>duplicate calls avoided</small></article><article class="summary-card"><span>Reuse rate</span><strong id="brokerReusePct">0%</strong><small>shared response efficiency</small></article></div>
       <div class="section-head" style="margin-top:10px"><div><h3 style="margin:0">Live Opportunities</h3><p class="muted">Current market state for the adaptive watch pool.</p></div><span id="discoverUpdated" class="muted">No checks yet</span></div>
       <div class="table-wrap"><table class="research-table"><thead><tr><th>Item</th><th>Signal</th><th>Cache state</th><th>Buy</th><th>Market value</th><th>Discount</th><th>NPC floor</th><th>Potential</th><th></th></tr></thead><tbody id="discoverRows"><tr><td colspan="9" class="muted">Start Market Intelligence to begin checking the adaptive pool.</td></tr></tbody></table></div>
       <div class="section-head" style="margin-top:24px"><div><h3 style="margin:0">Evidence & Learning</h3><p class="muted">The same engine uses accumulated snapshots to decide which markets deserve more attention.</p></div><span id="learnUpdated" class="muted">Evidence not refreshed yet</span></div>
@@ -70,27 +54,9 @@
   </div>
 
   <div id="equipmentView" hidden>
-    <section class="panel">
-      <div class="section-head"><div><h2>Your Equipment</h2><p class="muted">Loads weapons and armor directly from your Torn inventory using the API key already connected to TornTools.</p></div><button id="eqInventoryBtn" class="secondary" onclick="loadEquipmentInventory(true)">Refresh Inventory</button></div>
-      <div id="eqInventoryStatus" class="research-note">Inventory has not been loaded yet.</div>
-      <div class="toolbar" style="margin-bottom:12px"><select id="eqCategoryFilter" onchange="applyInventoryFilters()"><option value="all">All categories</option></select><select id="eqStatusFilter" onchange="applyInventoryFilters()"><option value="all">Plain + RW</option><option value="plain">Plain only</option><option value="rw">RW / bonused only</option><option value="equipped">Equipped only</option></select><select id="eqSort" onchange="applyInventoryFilters()"><option value="category">Sort: Category</option><option value="name">Sort: Name</option><option value="quality_desc">Sort: Quality high → low</option><option value="quality_asc">Sort: Quality low → high</option></select><input id="eqSearch" type="search" placeholder="Search equipment…" oninput="applyInventoryFilters()"><div class="spacer"></div><span id="eqVisibleCount" class="muted"></span></div>
-      <div class="table-wrap"><table class="research-table"><thead><tr><th>Item</th><th>Category</th><th>Quality</th><th>Stats</th><th>Type</th><th>Status</th><th></th></tr></thead><tbody id="eqInventoryRows"><tr><td colspan="7" class="muted">Open this tab to load your equipment.</td></tr></tbody></table></div>
-    </section>
-    <section id="equipmentCheckerPanel" class="panel">
-      <div class="section-head"><div><h2>Equipment Checker</h2><p class="muted">Check whether a plain white weapon or armor roll is worth putting on the market instead of vendoring it.</p></div></div>
-      <div class="research-note">Click <strong>Use</strong> above to fill these fields from your inventory, or enter them manually. TornTools compares only plain listings with no RW bonuses or rarity. Torn's base vendor/NPC sell value and standard market value are fetched automatically when available.</div>
-      <div class="equipment-grid"><label>Item ID<input id="eqItemId" type="number" min="1" step="1" placeholder="e.g. Benelli item ID"></label><label>Quality %<input id="eqQuality" type="number" min="0" max="100" step="0.01" placeholder="e.g. 67.42"></label><label>Damage<input id="eqDamage" type="number" min="0" step="0.01" placeholder="weapon only"></label><label>Accuracy<input id="eqAccuracy" type="number" min="0" step="0.01" placeholder="weapon only"></label><label>Armor<input id="eqArmor" type="number" min="0" step="0.01" placeholder="armor only"></label><label>Vendor sell value<input id="eqVendor" type="number" min="0" step="1" placeholder="auto-filled when available"></label></div>
-      <div class="toolbar"><button id="eqCheckBtn" onclick="checkEquipment()">Check Equipment</button><button class="secondary" onclick="clearEquipment()">Clear</button><div class="spacer"></div><span id="eqSelected" class="muted">No inventory item selected.</span></div>
-      <div id="eqSelectedMarket" class="research-note">Torn market value: —</div>
-    </section>
+    <section class="panel"><div class="section-head"><div><h2>Your Equipment</h2><p class="muted">Loads weapons and armor directly from your Torn inventory using the API key already connected to TornTools.</p></div><button id="eqInventoryBtn" class="secondary" onclick="loadEquipmentInventory(true)">Refresh Inventory</button></div><div id="eqInventoryStatus" class="research-note">Inventory has not been loaded yet.</div><div class="toolbar" style="margin-bottom:12px"><select id="eqCategoryFilter" onchange="applyInventoryFilters()"><option value="all">All categories</option></select><select id="eqStatusFilter" onchange="applyInventoryFilters()"><option value="all">Plain + RW</option><option value="plain">Plain only</option><option value="rw">RW / bonused only</option><option value="equipped">Equipped only</option></select><select id="eqSort" onchange="applyInventoryFilters()"><option value="category">Sort: Category</option><option value="name">Sort: Name</option><option value="quality_desc">Sort: Quality high → low</option><option value="quality_asc">Sort: Quality low → high</option></select><input id="eqSearch" type="search" placeholder="Search equipment…" oninput="applyInventoryFilters()"><div class="spacer"></div><span id="eqVisibleCount" class="muted"></span></div><div class="table-wrap"><table class="research-table"><thead><tr><th>Item</th><th>Category</th><th>Quality</th><th>Stats</th><th>Type</th><th>Status</th><th></th></tr></thead><tbody id="eqInventoryRows"><tr><td colspan="7" class="muted">Open this tab to load your equipment.</td></tr></tbody></table></div></section>
+    <section id="equipmentCheckerPanel" class="panel"><div class="section-head"><div><h2>Equipment Checker</h2><p class="muted">Check whether a plain white weapon or armor roll is worth putting on the market instead of vendoring it.</p></div></div><div class="research-note">Click <strong>Use</strong> above to fill these fields from your inventory, or enter them manually. TornTools compares only plain listings with no RW bonuses or rarity.</div><div class="equipment-grid"><label>Item ID<input id="eqItemId" type="number" min="1" step="1"></label><label>Quality %<input id="eqQuality" type="number" min="0" max="100" step="0.01"></label><label>Damage<input id="eqDamage" type="number" min="0" step="0.01"></label><label>Accuracy<input id="eqAccuracy" type="number" min="0" step="0.01"></label><label>Armor<input id="eqArmor" type="number" min="0" step="0.01"></label><label>Vendor sell value<input id="eqVendor" type="number" min="0" step="1"></label></div><div class="toolbar"><button id="eqCheckBtn" onclick="checkEquipment()">Check Equipment</button><button class="secondary" onclick="clearEquipment()">Clear</button><div class="spacer"></div><span id="eqSelected" class="muted">No inventory item selected.</span></div><div id="eqSelectedMarket" class="research-note">Torn market value: —</div></section>
     <section id="equipmentResult"><div class="empty">Choose an inventory item above or enter an item and its stats, then check the market.</div></section>
-    <section class="notice"><strong>How to read this:</strong> MARKET IT means current comparable asking prices leave a worthwhile premium after Torn's 5% market fee. VENDOR means the current plain market does not appear to pay enough extra. DON'T VENDOR YET protects unusually strong rolls when the current sample is weak or inconclusive.</section>
   </div>
-
-  <section class="notice"><strong>Manual actions only:</strong> TornTools never buys automatically. Direct BUY 1 appears only for a single-unit live-safe candidate and is triggered by your click; stacks stay on the normal Torn market page.</section>
-</main>
-<script src="/static/app.js"></script>
-<script src="/static/sniper.js"></script>
-<script src="/static/manual-buy.js"></script>
-<script src="/static/equipment.js"></script>
-</body></html>
+  <section class="notice"><strong>Manual actions only:</strong> TornTools never buys automatically.</section>
+</main><script src="/static/app.js"></script><script src="/static/sniper.js"></script><script src="/static/manual-buy.js"></script><script src="/static/equipment.js"></script></body></html>
