@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import math
+import statistics
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,11 +18,15 @@ app = bazaar_watch_runtime.app
 STOCK_URL = "https://torn-intel.com/api/v1/public/foreign-stock"
 HISTORY_URL = "https://torn-intel.com/api/v1/public/foreign-stock/history"
 TORN_USER_URL = "https://api.torn.com/user/"
-USER_AGENT = "TornTools-Local/0.6.1 TravelIntelligence"
+USER_AGENT = "TornTools-Local/0.6.2 TravelIntelligence"
 CACHE_SECONDS = 20
 TRAVEL_CACHE_SECONDS = 12
+HISTORY_CACHE_SECONDS = 90
+RESTOCK_HISTORY_HOURS = 48
+RESTOCKS_PER_COUNTRY = 2
 _stock_cache: dict[str, Any] = {"at": 0.0, "data": None}
 _travel_cache: dict[str, Any] = {"at": 0.0, "data": None}
+_history_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
 
 # Approximate one-way minutes with a Private Island airstrip. The UI exposes a
 # speed multiplier so the ranking can be calibrated to the player's actual trip.
@@ -49,6 +55,21 @@ def _stock() -> dict:
         return _stock_cache["data"]
     data = _get_json(STOCK_URL)
     _stock_cache.update(at=now, data=data)
+    return data
+
+
+def _history(country: str, item_id: int, hours: int = RESTOCK_HISTORY_HOURS) -> dict:
+    key = (str(country).lower(), int(item_id), int(hours))
+    now = time.time()
+    cached = _history_cache.get(key)
+    if cached and now - float(cached.get("at") or 0) < HISTORY_CACHE_SECONDS:
+        return cached.get("data") or {}
+    q = urllib.parse.urlencode({"country": key[0], "itemId": key[1], "hours": key[2]})
+    try:
+        data = _get_json(f"{HISTORY_URL}?{q}")
+    except Exception as exc:
+        data = {"points": [], "_error": str(exc)}
+    _history_cache[key] = {"at": now, "data": data}
     return data
 
 
@@ -138,6 +159,17 @@ def _age_seconds(value: Any) -> float:
         return 999999.0
 
 
+def _timestamp(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
 def _confidence(age_s: float, qty: int) -> tuple[float, str]:
     freshness = max(0.45, 1.0 - max(0.0, age_s - 20.0) / 300.0)
     stock = min(1.0, 0.55 + math.log1p(max(0, qty)) / 8.0)
@@ -148,8 +180,6 @@ def _confidence(age_s: float, qty: int) -> tuple[float, str]:
 
 def _adjusted_sale(market: int, cost: int, age_s: float, qty: int) -> tuple[int, float, str]:
     conf, label = _confidence(age_s, qty)
-    # Conservative realization haircut. Until our own resale evidence exists,
-    # don't treat a community marketValue snapshot as guaranteed cash.
     haircut = 0.985 - (1.0 - conf) * 0.045
     sale = max(cost, int(market * haircut))
     return sale, conf, label
@@ -215,8 +245,145 @@ def _optimize_country(country: dict, capacity: int, speed: float, sale_fee: floa
         "spend": spend, "headline_profit": headline_profit, "expected_profit": expected_profit,
         "profit_per_hour": round(profit_hour), "confidence": round(confidence, 3),
         "confidence_label": "HIGH" if confidence >= .82 else "MEDIUM" if confidence >= .62 else "LOW",
-        "score": round(score), "load": load,
+        "score": round(score), "load": load, "restocks": [],
     }
+
+
+def _sold_out_candidates(country: dict, sale_fee: float, limit: int) -> list[dict]:
+    ranked = []
+    for raw in country.get("items") or []:
+        try:
+            qty = max(0, int(raw.get("quantity") or 0))
+            cost = max(0, int(raw.get("cost") or 0))
+            market = max(0, int(raw.get("marketValue") or 0))
+            item_id = int(raw.get("itemId") or 0)
+        except (TypeError, ValueError):
+            continue
+        if qty != 0 or not item_id or cost <= 0 or market <= 0:
+            continue
+        net_profit = int(market * (1.0 - sale_fee)) - cost
+        if net_profit <= 0:
+            continue
+        ranked.append({
+            "item_id": item_id,
+            "name": raw.get("itemName") or "Unknown",
+            "cost": cost,
+            "market_value": market,
+            "profit_each": net_profit,
+        })
+    ranked.sort(key=lambda x: x["profit_each"], reverse=True)
+    return ranked[:limit]
+
+
+def _estimate_restock(country: str, item: dict, arrival_ts: float) -> dict:
+    history = _history(country, item["item_id"], RESTOCK_HISTORY_HOURS)
+    raw_points = history.get("points") if isinstance(history, dict) else []
+    points = []
+    for raw in raw_points or []:
+        ts = _timestamp(raw.get("t")) if isinstance(raw, dict) else None
+        if ts is None:
+            continue
+        try:
+            qty = max(0, int(raw.get("quantity") or 0))
+        except (TypeError, ValueError):
+            continue
+        points.append((ts, qty))
+    points.sort(key=lambda x: x[0])
+
+    zero_start = None
+    completed = []
+    previous_qty = None
+    for ts, qty in points:
+        if qty == 0 and (previous_qty is None or previous_qty > 0):
+            zero_start = ts
+        elif qty > 0 and previous_qty == 0 and zero_start is not None:
+            duration = ts - zero_start
+            if 30 <= duration <= 12 * 3600:
+                completed.append(duration)
+            zero_start = None
+        previous_qty = qty
+
+    result = {
+        **item,
+        "sample_cycles": len(completed),
+        "history_points": len(points),
+        "status": "LEARNING",
+        "confidence_label": "LOW",
+        "estimated_at": None,
+        "seconds_from_landing": None,
+        "stockout_since": zero_start,
+    }
+    if not points or points[-1][1] > 0 or zero_start is None:
+        result["status"] = "NO_ACTIVE_STOCKOUT"
+        return result
+    if not completed:
+        return result
+
+    median_delay = float(statistics.median(completed))
+    estimate = zero_start + median_delay
+    if len(completed) >= 3:
+        spread = statistics.pstdev(completed) / max(1.0, median_delay)
+        confidence = "HIGH" if spread <= .22 else "MEDIUM" if spread <= .45 else "LOW"
+    elif len(completed) == 2:
+        spread = abs(completed[0] - completed[1]) / max(1.0, median_delay)
+        confidence = "MEDIUM" if spread <= .35 else "LOW"
+    else:
+        spread = None
+        confidence = "LOW"
+
+    now = time.time()
+    result.update({
+        "status": "OVERDUE" if estimate <= now else "ESTIMATED",
+        "confidence_label": confidence,
+        "estimated_at": round(estimate),
+        "median_zero_seconds": round(median_delay),
+        "seconds_from_landing": round(estimate - arrival_ts),
+        "overdue_seconds": round(max(0.0, now - estimate)),
+        "dispersion": round(spread, 3) if spread is not None else None,
+    })
+    return result
+
+
+def _attach_restocks(trips: list[dict], countries: list[dict], travel: dict, speed: float, sale_fee: float) -> None:
+    trip_by_code = {t["country"]: t for t in trips}
+    country_by_code = {str(c.get("country") or "").lower(): c for c in countries}
+    jobs = []
+    now = time.time()
+    current_code = travel.get("destination_code") if travel.get("available") else None
+    for code, trip in trip_by_code.items():
+        country = country_by_code.get(code)
+        if not country:
+            continue
+        candidates = _sold_out_candidates(country, sale_fee, RESTOCKS_PER_COUNTRY)
+        if not candidates:
+            continue
+        if code == current_code and travel.get("state") == "FLYING_OUT" and travel.get("timestamp"):
+            arrival_ts = float(travel["timestamp"])
+        elif code == current_code and travel.get("state") == "ABROAD":
+            arrival_ts = now
+        else:
+            arrival_ts = now + float(trip["one_way_minutes"]) * 60.0
+        for item in candidates:
+            jobs.append((code, item, arrival_ts))
+
+    if not jobs:
+        return
+    results: dict[str, list[dict]] = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        future_map = {pool.submit(_estimate_restock, code, item, arrival_ts): code for code, item, arrival_ts in jobs}
+        for future in as_completed(future_map):
+            code = future_map[future]
+            try:
+                result = future.result()
+            except Exception:
+                continue
+            if result.get("status") in {"ESTIMATED", "OVERDUE", "LEARNING"}:
+                results.setdefault(code, []).append(result)
+
+    for code, rows in results.items():
+        rows.sort(key=lambda x: (x.get("estimated_at") is None, x.get("estimated_at") or 10**20, -x.get("profit_each", 0)))
+        if code in trip_by_code:
+            trip_by_code[code]["restocks"] = rows
 
 
 @app.get("/api/travel-intelligence/state")
@@ -231,8 +398,10 @@ def travel_intelligence(capacity: int = 17, speed: float = 1.0, sale_fee: float 
     sale_fee = max(0.0, min(.25, float(sale_fee)))
     data = _stock()
     travel = _travel_state()
-    trips = [x for x in (_optimize_country(c, capacity, speed, sale_fee) for c in data.get("countries") or []) if x]
+    countries = data.get("countries") or []
+    trips = [x for x in (_optimize_country(c, capacity, speed, sale_fee) for c in countries) if x]
     trips.sort(key=lambda x: x["score"], reverse=True)
+    _attach_restocks(trips, countries, travel, speed, sale_fee)
     destination_trip = None
     dest_code = travel.get("destination_code") if travel.get("available") else None
     if dest_code:
@@ -242,12 +411,12 @@ def travel_intelligence(capacity: int = 17, speed: float = 1.0, sale_fee: float 
         "capacity": capacity, "speed": speed, "sale_fee": sale_fee,
         "best": trips[0] if trips else None, "trips": trips,
         "travel": travel, "destination_trip": destination_trip,
-        "model": "TT-Travel-v1.1", "note": "Adjusted profit is conservative and confidence-weighted; it is not a guaranteed sale price.",
+        "model": "TT-Travel-v1.2",
+        "note": "Restock estimates are learned from observed 48-hour stockout-to-restock cycles and are not Torn Intel's private predictions.",
     }
 
 
 @app.get("/api/travel-intelligence/history")
 def travel_history(country: str, item_id: int, hours: int = 24):
     hours = max(1, min(48, int(hours)))
-    q = urllib.parse.urlencode({"country": country, "itemId": int(item_id), "hours": hours})
-    return _get_json(f"{HISTORY_URL}?{q}")
+    return _history(country, int(item_id), hours)
