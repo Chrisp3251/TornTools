@@ -3,6 +3,7 @@
 let previousKey='', lastPoll=0;
 const esc=s=>typeof tiEsc==='function'?tiEsc(s):String(s??'');
 const money=n=>typeof tiMoney!=='undefined'?tiMoney.format(Number(n)||0):`$${Math.round(Number(n)||0).toLocaleString()}`;
+function syncModel(d){const el=document.getElementById('model');if(el&&d?.model)el.textContent=d.model}
 function loadKey(t){return (t?.load||[]).map(x=>`${x.item_id}:${x.buy}:${x.stock}`).join('|')}
 function predicted(t,travel){
  const arrival=Number(travel?.timestamp||0)||Date.now()/1000;
@@ -17,6 +18,7 @@ function ensure(){
  if(!box){box=document.createElement('div');box.id='liveLandingTarget';box.className='live-target';state.appendChild(box)}return box;
 }
 function render(d){
+ syncModel(d);
  const tr=d?.travel||{},t=d?.destination_trip,box=ensure();if(!box)return;
  if(!tr.available||!['FLYING_OUT','ABROAD'].includes(tr.state)||!t){box.hidden=true;return}box.hidden=false;
  const actual=t.load?.[0], forecast=predicted(t,tr), key=loadKey(t), changed=previousKey&&key!==previousKey;previousKey=key;
@@ -29,8 +31,8 @@ async function poll(){
  const d=window.tiLastData||((typeof tiLastData!=='undefined')?tiLastData:null),tr=d?.travel||{};
  if(!tr.available||!['FLYING_OUT','ABROAD'].includes(tr.state))return;
  if(Date.now()-lastPoll<9000)return;lastPoll=Date.now();
- try{const cap=Math.max(1,Number(document.getElementById('capacity')?.value)||17),speed=Math.max(.25,Number(document.getElementById('speed')?.value)||1),fee=Math.max(0,Number(document.getElementById('fee')?.value)||5)/100;const r=await fetch(`/api/travel-intelligence?capacity=${encodeURIComponent(cap)}&speed=${encodeURIComponent(speed)}&sale_fee=${encodeURIComponent(fee)}&live=1`,{cache:'no-store'});const n=await r.json();if(!r.ok)return;tiLastData=n;window.tiLastData=n;if(typeof tiTravelCard==='function')tiTravelCard(n.travel,n.destination_trip);if(typeof tiBest==='function')tiBest(n.best,n.travel,n.destination_trip);setTimeout(()=>render(n),0)}catch(e){}
+ try{const cap=Math.max(1,Number(document.getElementById('capacity')?.value)||17),speed=Math.max(.25,Number(document.getElementById('speed')?.value)||1),fee=Math.max(0,Number(document.getElementById('fee')?.value)||5)/100;const r=await fetch(`/api/travel-intelligence?capacity=${encodeURIComponent(cap)}&speed=${encodeURIComponent(speed)}&sale_fee=${encodeURIComponent(fee)}&live=1`,{cache:'no-store'});const n=await r.json();if(!r.ok)return;tiLastData=n;window.tiLastData=n;syncModel(n);if(typeof tiTravelCard==='function')tiTravelCard(n.travel,n.destination_trip);if(typeof tiBest==='function')tiBest(n.best,n.travel,n.destination_trip);setTimeout(()=>render(n),0)}catch(e){}
 }
 const css=document.createElement('style');css.textContent=`.live-target{margin-top:12px;border:1px solid rgba(85,201,134,.38);border-radius:11px;padding:11px 12px;background:linear-gradient(135deg,rgba(85,201,134,.08),rgba(117,183,255,.035))}.live-target-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:9px}.live-target-main,.live-target-forecast{padding:9px 10px;border-radius:8px;background:rgba(0,0,0,.14);border:1px solid var(--border,#343943)}.live-target-main span,.live-target-forecast span{display:block;font-size:9px;letter-spacing:.1em;font-weight:900;color:#70d89a}.live-target-main strong,.live-target-forecast strong{display:block;font-size:16px;margin-top:3px}.live-target-main small,.live-target-forecast small{display:block;color:var(--muted,#9ba1ad);font-size:10px;margin-top:3px}.live-target-forecast.upgrade{border-color:rgba(244,199,109,.5);background:rgba(244,199,109,.06)}.live-target-forecast.upgrade span{color:#f4c76d}.live-change{font-size:11px;font-weight:900;color:#f4c76d;margin-bottom:8px}.live-target-foot{font-size:9px;color:var(--muted,#9ba1ad);margin-top:8px}.live-target-foot i{display:inline-block;width:6px;height:6px;border-radius:50%;background:#55c986;margin-right:5px;box-shadow:0 0 0 3px rgba(85,201,134,.12)}`;document.head.appendChild(css);
-setInterval(()=>{const d=window.tiLastData||((typeof tiLastData!=='undefined')?tiLastData:null);if(d)render(d);poll()},10000);setTimeout(()=>{const d=window.tiLastData||((typeof tiLastData!=='undefined')?tiLastData:null);if(d)render(d);poll()},1200);
+setInterval(()=>{const d=window.tiLastData||((typeof tiLastData!=='undefined')?tiLastData:null);if(d){syncModel(d);render(d)}poll()},10000);setTimeout(()=>{const d=window.tiLastData||((typeof tiLastData!=='undefined')?tiLastData:null);if(d){syncModel(d);render(d)}poll()},1200);
 })();
