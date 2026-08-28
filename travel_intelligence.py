@@ -18,18 +18,17 @@ app = bazaar_watch_runtime.app
 STOCK_URL = "https://torn-intel.com/api/v1/public/foreign-stock"
 HISTORY_URL = "https://torn-intel.com/api/v1/public/foreign-stock/history"
 TORN_USER_URL = "https://api.torn.com/user/"
-USER_AGENT = "TornTools-Local/0.6.2 TravelIntelligence"
+USER_AGENT = "TornTools-Local/0.6.3 TravelIntelligence"
 CACHE_SECONDS = 20
 TRAVEL_CACHE_SECONDS = 12
 HISTORY_CACHE_SECONDS = 90
 RESTOCK_HISTORY_HOURS = 48
-RESTOCKS_PER_COUNTRY = 2
+RESTOCKS_PER_COUNTRY = 5
+RESTOCKS_CURRENT_DESTINATION = 8
 _stock_cache: dict[str, Any] = {"at": 0.0, "data": None}
 _travel_cache: dict[str, Any] = {"at": 0.0, "data": None}
 _history_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
 
-# Approximate one-way minutes with a Private Island airstrip. The UI exposes a
-# speed multiplier so the ranking can be calibrated to the player's actual trip.
 AIRSTRIP_MINUTES = {
     "mex": 18, "cay": 25, "can": 29, "haw": 53, "uk": 111,
     "arg": 117, "swi": 123, "jap": 158, "chi": 169, "uae": 176, "saf": 178,
@@ -130,19 +129,12 @@ def _travel_state() -> dict:
         state = "IN_TORN"
 
     data = {
-        "available": True,
-        "state": state,
-        "status_state": state_raw,
-        "description": description,
-        "destination": destination_name or None,
-        "destination_code": destination_code,
-        "method": method,
-        "timestamp": timestamp or None,
-        "departed": departed or None,
-        "time_left": time_left,
-        "is_return": is_return,
-        "is_traveling": is_traveling,
-        "is_abroad": is_abroad,
+        "available": True, "state": state, "status_state": state_raw,
+        "description": description, "destination": destination_name or None,
+        "destination_code": destination_code, "method": method,
+        "timestamp": timestamp or None, "departed": departed or None,
+        "time_left": time_left, "is_return": is_return,
+        "is_traveling": is_traveling, "is_abroad": is_abroad,
         "checked_at": int(now),
     }
     _travel_cache.update(at=now, data=data)
@@ -241,8 +233,9 @@ def _optimize_country(country: dict, capacity: int, speed: float, sale_fee: floa
         "country": code, "country_name": COUNTRY_NAMES.get(code, code.upper()),
         "updated_at": country.get("updatedAt"), "age_seconds": round(age_s),
         "capacity": capacity, "filled": fill, "remaining": remaining,
-        "one_way_minutes": round(base_minutes / max(.25, speed), 1), "round_trip_minutes": round(trip_minutes, 1),
-        "spend": spend, "headline_profit": headline_profit, "expected_profit": expected_profit,
+        "one_way_minutes": round(base_minutes / max(.25, speed), 1),
+        "round_trip_minutes": round(trip_minutes, 1), "spend": spend,
+        "headline_profit": headline_profit, "expected_profit": expected_profit,
         "profit_per_hour": round(profit_hour), "confidence": round(confidence, 3),
         "confidence_label": "HIGH" if confidence >= .82 else "MEDIUM" if confidence >= .62 else "LOW",
         "score": round(score), "load": load, "restocks": [],
@@ -251,6 +244,7 @@ def _optimize_country(country: dict, capacity: int, speed: float, sale_fee: floa
 
 def _sold_out_candidates(country: dict, sale_fee: float, limit: int) -> list[dict]:
     ranked = []
+    observed_out_at = _timestamp(country.get("updatedAt")) or time.time()
     for raw in country.get("items") or []:
         try:
             qty = max(0, int(raw.get("quantity") or 0))
@@ -264,14 +258,16 @@ def _sold_out_candidates(country: dict, sale_fee: float, limit: int) -> list[dic
         net_profit = int(market * (1.0 - sale_fee)) - cost
         if net_profit <= 0:
             continue
+        # Restock watch is deliberately separate from the in-stock load optimizer.
+        # Profit is primary; market value adds a small desirability bias so premium
+        # foreign items are not hidden behind cheap high-margin curiosities.
+        desirability = net_profit + int(market * 0.08)
         ranked.append({
-            "item_id": item_id,
-            "name": raw.get("itemName") or "Unknown",
-            "cost": cost,
-            "market_value": market,
-            "profit_each": net_profit,
+            "item_id": item_id, "name": raw.get("itemName") or "Unknown",
+            "cost": cost, "market_value": market, "profit_each": net_profit,
+            "desirability": desirability, "observed_out_at": round(observed_out_at),
         })
-    ranked.sort(key=lambda x: x["profit_each"], reverse=True)
+    ranked.sort(key=lambda x: (x["desirability"], x["profit_each"], x["market_value"]), reverse=True)
     return ranked[:limit]
 
 
@@ -303,19 +299,21 @@ def _estimate_restock(country: str, item: dict, arrival_ts: float) -> dict:
             zero_start = None
         previous_qty = qty
 
+    anchor_quality = "HISTORY"
+    current_feed_anchor = float(item.get("observed_out_at") or time.time())
+    # The live stock feed can report zero before the 48h history endpoint has
+    # recorded that transition. In that case use the current observation time as
+    # a conservative stockout anchor instead of dropping the item from the watch.
+    if zero_start is None and (not points or points[-1][1] > 0):
+        zero_start = current_feed_anchor
+        anchor_quality = "CURRENT_FEED"
+
     result = {
-        **item,
-        "sample_cycles": len(completed),
-        "history_points": len(points),
-        "status": "LEARNING",
-        "confidence_label": "LOW",
-        "estimated_at": None,
-        "seconds_from_landing": None,
-        "stockout_since": zero_start,
+        **item, "sample_cycles": len(completed), "history_points": len(points),
+        "status": "LEARNING", "confidence_label": "LOW", "estimated_at": None,
+        "arrival_ts": round(arrival_ts), "seconds_from_landing": None,
+        "stockout_since": zero_start, "anchor_quality": anchor_quality,
     }
-    if not points or points[-1][1] > 0 or zero_start is None:
-        result["status"] = "NO_ACTIVE_STOCKOUT"
-        return result
     if not completed:
         return result
 
@@ -330,12 +328,13 @@ def _estimate_restock(country: str, item: dict, arrival_ts: float) -> dict:
     else:
         spread = None
         confidence = "LOW"
+    if anchor_quality == "CURRENT_FEED" and confidence == "HIGH":
+        confidence = "MEDIUM"
 
     now = time.time()
     result.update({
         "status": "OVERDUE" if estimate <= now else "ESTIMATED",
-        "confidence_label": confidence,
-        "estimated_at": round(estimate),
+        "confidence_label": confidence, "estimated_at": round(estimate),
         "median_zero_seconds": round(median_delay),
         "seconds_from_landing": round(estimate - arrival_ts),
         "overdue_seconds": round(max(0.0, now - estimate)),
@@ -354,7 +353,8 @@ def _attach_restocks(trips: list[dict], countries: list[dict], travel: dict, spe
         country = country_by_code.get(code)
         if not country:
             continue
-        candidates = _sold_out_candidates(country, sale_fee, RESTOCKS_PER_COUNTRY)
+        limit = RESTOCKS_CURRENT_DESTINATION if code == current_code else RESTOCKS_PER_COUNTRY
+        candidates = _sold_out_candidates(country, sale_fee, limit)
         if not candidates:
             continue
         if code == current_code and travel.get("state") == "FLYING_OUT" and travel.get("timestamp"):
@@ -381,7 +381,13 @@ def _attach_restocks(trips: list[dict], countries: list[dict], travel: dict, spe
                 results.setdefault(code, []).append(result)
 
     for code, rows in results.items():
-        rows.sort(key=lambda x: (x.get("estimated_at") is None, x.get("estimated_at") or 10**20, -x.get("profit_each", 0)))
+        # Show the items a player actually cares about first. Timing breaks ties;
+        # it no longer determines which premium item disappears from the list.
+        rows.sort(key=lambda x: (
+            -int(x.get("desirability") or 0),
+            abs(int(x.get("seconds_from_landing") or 10**9)),
+            -int(x.get("sample_cycles") or 0),
+        ))
         if code in trip_by_code:
             trip_by_code[code]["restocks"] = rows
 
@@ -411,8 +417,8 @@ def travel_intelligence(capacity: int = 17, speed: float = 1.0, sale_fee: float 
         "capacity": capacity, "speed": speed, "sale_fee": sale_fee,
         "best": trips[0] if trips else None, "trips": trips,
         "travel": travel, "destination_trip": destination_trip,
-        "model": "TT-Travel-v1.2",
-        "note": "Restock estimates are learned from observed 48-hour stockout-to-restock cycles and are not Torn Intel's private predictions.",
+        "model": "TT-Travel-v1.3",
+        "note": "Restock estimates are learned from observed 48-hour stockout-to-restock cycles and current-feed stockouts; they are not Torn Intel's private predictions.",
     }
 
 
