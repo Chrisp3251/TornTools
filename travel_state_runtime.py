@@ -14,7 +14,57 @@ import travel_intelligence as ti
 
 app = ti.app
 _original_travel_state = ti._travel_state
+_original_optimize_country = ti._optimize_country
 _last: dict[str, Any] = {"state": None, "destination_code": None, "foreign_country_code": None, "timestamp": None, "departed": None}
+
+# Exact one-way Torn travel times in minutes for the normal travel choices.
+# The main optimizer historically used Airstrip minutes plus a free-form speed
+# multiplier. Keep the API backward compatible, but map the UI's discrete values
+# to the real Torn modes and country-specific times instead.
+TRAVEL_MODE_MINUTES = {
+    "standard": {"mex": 26, "cay": 35, "can": 41, "haw": 134, "uk": 159, "arg": 167, "swi": 175, "jap": 225, "chi": 242, "uae": 271, "saf": 297},
+    "airstrip": {"mex": 18, "cay": 25, "can": 29, "haw": 94, "uk": 111, "arg": 117, "swi": 123, "jap": 158, "chi": 169, "uae": 190, "saf": 208},
+    "wlt":      {"mex": 13, "cay": 18, "can": 20, "haw": 67, "uk": 80, "arg": 83, "swi": 88, "jap": 113, "chi": 121, "uae": 135, "saf": 149},
+    "business": {"mex": 8,  "cay": 11, "can": 12, "haw": 40, "uk": 48, "arg": 50, "swi": 53, "jap": 68,  "chi": 72,  "uae": 81,  "saf": 89},
+}
+TRAVEL_MODE_SENTINELS = {0.5: "standard", 1.0: "airstrip", 2.0: "wlt", 3.0: "business"}
+TRAVEL_MODE_LABELS = {"standard": "Standard", "airstrip": "Airstrip", "wlt": "WLT Private", "business": "Business Class"}
+
+# Correct the shared Airstrip table too. This is used for fallback return-time
+# projections while abroad and was previously wrong for several long-haul routes.
+ti.AIRSTRIP_MINUTES.update(TRAVEL_MODE_MINUTES["airstrip"])
+
+
+def _travel_mode_for_speed(speed: float) -> str | None:
+    value = float(speed)
+    for sentinel, mode in TRAVEL_MODE_SENTINELS.items():
+        if abs(value - sentinel) < 0.001:
+            return mode
+    return None
+
+
+def _optimize_country_with_mode(country: dict, capacity: int, speed: float, sale_fee: float) -> dict | None:
+    mode = _travel_mode_for_speed(speed)
+    code = str(country.get("country") or "").lower()
+    desired = TRAVEL_MODE_MINUTES.get(mode or "", {}).get(code)
+    if not desired:
+        return _original_optimize_country(country, capacity, speed, sale_fee)
+
+    base = float(ti.AIRSTRIP_MINUTES.get(code) or desired)
+    effective_speed = base / float(desired)
+    result = _original_optimize_country(country, capacity, effective_speed, sale_fee)
+    if result:
+        result["travel_mode"] = mode
+        result["travel_mode_label"] = TRAVEL_MODE_LABELS[mode]
+        result["one_way_minutes"] = float(desired)
+        result["round_trip_minutes"] = float(desired * 2)
+        result["profit_per_hour"] = round(float(result.get("expected_profit") or 0) / max(1 / 60, (desired * 2) / 60.0))
+        fill = float(result.get("filled") or 0); cap = max(1.0, float(result.get("capacity") or capacity)); conf = float(result.get("confidence") or 0)
+        result["score"] = round(result["profit_per_hour"] * (0.70 + 0.30 * fill / cap) * (0.72 + 0.28 * conf))
+    return result
+
+
+ti._optimize_country = _optimize_country_with_mode
 
 
 def _route_parts(description: str) -> tuple[str | None, str | None]:
@@ -119,12 +169,7 @@ ti._travel_state = _enhanced_travel_state
 
 
 def _destination_stock_payload(capacity: int = 17, sale_fee: float = 0.05) -> dict:
-    """Read the current foreign feed directly for the player's active destination.
-
-    This is intentionally independent of the full trip ranking. It prevents the
-    landing target from going blank if the country is omitted from the ranked
-    trips for any reason.
-    """
+    """Read the current foreign feed directly for the player's active destination."""
     travel = _enhanced_travel_state()
     code = travel.get("foreign_country_code") or travel.get("destination_code")
     if not code:
@@ -152,8 +197,6 @@ def _destination_stock_payload(capacity: int = 17, sale_fee: float = 0.05) -> di
             "stock": qty, "cost": cost, "market_value": market, "headline_profit_each": headline_profit,
             "profit_each": conservative_profit, "confidence": round(conf, 3), "confidence_label": conf_label})
 
-    # Prefer our conservative profit; if everything is filtered negative, keep
-    # positive headline-profit stock visible rather than showing a blank target.
     profitable = [x for x in rows if x["profit_each"] > 0]
     candidates = profitable if profitable else [x for x in rows if x["headline_profit_each"] > 0]
     candidates.sort(key=lambda x: (x["profit_each"] if profitable else x["headline_profit_each"], x["stock"]), reverse=True)
