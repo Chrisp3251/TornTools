@@ -40,4 +40,5 @@
     const existing=[...root.querySelectorAll('.research-note')].find(x=>x.textContent.includes('BUY PRIORITY'));
     if(existing){existing.classList.add('top-buy-priority');existing.innerHTML=`<div class="top-buy-label">WHAT TO BUY</div>${topLoadMarkup(chosen)}`;}
   };
+  const ui=document.createElement('script');ui.src='/static/travel-ui-v2.js';document.head.appendChild(ui);
 })();
