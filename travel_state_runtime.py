@@ -17,21 +17,14 @@ _original_travel_state = ti._travel_state
 _original_optimize_country = ti._optimize_country
 _last: dict[str, Any] = {"state": None, "destination_code": None, "foreign_country_code": None, "timestamp": None, "departed": None}
 
-# Exact one-way Torn travel times in minutes for the normal travel choices.
-# The main optimizer historically used Airstrip minutes plus a free-form speed
-# multiplier. Keep the API backward compatible, but map the UI's discrete values
-# to the real Torn modes and country-specific times instead.
 TRAVEL_MODE_MINUTES = {
     "standard": {"mex": 26, "cay": 35, "can": 41, "haw": 134, "uk": 159, "arg": 167, "swi": 175, "jap": 225, "chi": 242, "uae": 271, "saf": 297},
     "airstrip": {"mex": 18, "cay": 25, "can": 29, "haw": 94, "uk": 111, "arg": 117, "swi": 123, "jap": 158, "chi": 169, "uae": 190, "saf": 208},
-    "wlt":      {"mex": 13, "cay": 18, "can": 20, "haw": 67, "uk": 80, "arg": 83, "swi": 88, "jap": 113, "chi": 121, "uae": 135, "saf": 149},
-    "business": {"mex": 8,  "cay": 11, "can": 12, "haw": 40, "uk": 48, "arg": 50, "swi": 53, "jap": 68,  "chi": 72,  "uae": 81,  "saf": 89},
+    "wlt": {"mex": 13, "cay": 18, "can": 20, "haw": 67, "uk": 80, "arg": 83, "swi": 88, "jap": 113, "chi": 121, "uae": 135, "saf": 149},
+    "business": {"mex": 8, "cay": 11, "can": 12, "haw": 40, "uk": 48, "arg": 50, "swi": 53, "jap": 68, "chi": 72, "uae": 81, "saf": 89},
 }
 TRAVEL_MODE_SENTINELS = {0.5: "standard", 1.0: "airstrip", 2.0: "wlt", 3.0: "business"}
 TRAVEL_MODE_LABELS = {"standard": "Standard", "airstrip": "Airstrip", "wlt": "WLT Private", "business": "Business Class"}
-
-# Correct the shared Airstrip table too. This is used for fallback return-time
-# projections while abroad and was previously wrong for several long-haul routes.
 ti.AIRSTRIP_MINUTES.update(TRAVEL_MODE_MINUTES["airstrip"])
 
 
@@ -49,7 +42,6 @@ def _optimize_country_with_mode(country: dict, capacity: int, speed: float, sale
     desired = TRAVEL_MODE_MINUTES.get(mode or "", {}).get(code)
     if not desired:
         return _original_optimize_country(country, capacity, speed, sale_fee)
-
     base = float(ti.AIRSTRIP_MINUTES.get(code) or desired)
     effective_speed = base / float(desired)
     result = _original_optimize_country(country, capacity, effective_speed, sale_fee)
@@ -59,7 +51,9 @@ def _optimize_country_with_mode(country: dict, capacity: int, speed: float, sale
         result["one_way_minutes"] = float(desired)
         result["round_trip_minutes"] = float(desired * 2)
         result["profit_per_hour"] = round(float(result.get("expected_profit") or 0) / max(1 / 60, (desired * 2) / 60.0))
-        fill = float(result.get("filled") or 0); cap = max(1.0, float(result.get("capacity") or capacity)); conf = float(result.get("confidence") or 0)
+        fill = float(result.get("filled") or 0)
+        cap = max(1.0, float(result.get("capacity") or capacity))
+        conf = float(result.get("confidence") or 0)
         result["score"] = round(result["profit_per_hour"] * (0.70 + 0.30 * fill / cap) * (0.72 + 0.28 * conf))
     return result
 
@@ -94,7 +88,6 @@ def _enhanced_travel_state() -> dict:
     route_from_code = ti._country_code(route_from) if route_from else None
     route_to_code = ti._country_code(route_to) if route_to else None
     api_destination_code = raw.get("destination_code")
-
     traveling = api_state == "traveling" or time_left > 0 or timestamp > now
     abroad = api_state == "abroad"
 
@@ -108,23 +101,31 @@ def _enhanced_travel_state() -> dict:
     if traveling:
         if explicit_return or transition_return or same_return_flight:
             state = "FLYING_HOME"
-            if destination_is_torn: direction_source = "travel.destination_torn"
-            elif route_to_torn: direction_source = "status_route_to_torn"
-            elif "returning" in desc: direction_source = "status_description"
-            elif transition_return: direction_source = "state_transition"
-            else: direction_source = "sticky_return_leg"
+            if destination_is_torn:
+                direction_source = "travel.destination_torn"
+            elif route_to_torn:
+                direction_source = "status_route_to_torn"
+            elif "returning" in desc:
+                direction_source = "status_description"
+            elif transition_return:
+                direction_source = "state_transition"
+            else:
+                direction_source = "sticky_return_leg"
         else:
             state = "FLYING_OUT"
             direction_source = "status_route_from_torn" if route_from_torn and route_to_code else "traveling_default_outbound"
     elif abroad:
-        state = "ABROAD"; direction_source = "api_status_abroad"
+        state = "ABROAD"
+        direction_source = "api_status_abroad"
     else:
-        state = "IN_TORN"; direction_source = "api_status_torn"
+        state = "IN_TORN"
+        direction_source = "api_status_torn"
 
     if state == "FLYING_OUT":
         destination_code = route_to_code or api_destination_code
         foreign_country_code = destination_code
-        if route_to_code: raw["destination"] = ti.COUNTRY_NAMES.get(route_to_code, route_to)
+        if route_to_code:
+            raw["destination"] = ti.COUNTRY_NAMES.get(route_to_code, route_to)
     elif state == "FLYING_HOME":
         foreign_country_code = route_from_code or _last.get("foreign_country_code") or _last.get("destination_code")
         destination_code = None
@@ -132,36 +133,68 @@ def _enhanced_travel_state() -> dict:
         destination_code = api_destination_code or route_to_code or _last.get("foreign_country_code")
         foreign_country_code = destination_code
     else:
-        destination_code = None; foreign_country_code = None
+        destination_code = None
+        foreign_country_code = None
 
-    available_at = None; available_source = None; available_exact = False
+    available_at = None
+    available_source = None
+    available_exact = False
     if state == "IN_TORN":
-        available_at = now; available_source = "in_torn_now"; available_exact = True
+        available_at = now
+        available_source = "in_torn_now"
+        available_exact = True
     elif state == "FLYING_HOME" and timestamp:
-        available_at = timestamp; available_source = "travel.timestamp"; available_exact = True
+        available_at = timestamp
+        available_source = "travel.timestamp"
+        available_exact = True
     elif state == "FLYING_OUT" and timestamp:
         leg_seconds = timestamp - departed if departed and timestamp > departed else 0
         if leg_seconds:
-            available_at = timestamp + leg_seconds; available_source = "outbound_leg_projection"
+            available_at = timestamp + leg_seconds
+            available_source = "outbound_leg_projection"
     elif state == "ABROAD":
         minutes = ti.AIRSTRIP_MINUTES.get(foreign_country_code) if foreign_country_code else None
         if minutes:
-            available_at = now + int(minutes * 60); available_source = "abroad_return_projection"
+            available_at = now + int(minutes * 60)
+            available_source = "abroad_return_projection"
 
     raw.update({
-        "state": state, "destination_code": destination_code, "foreign_country_code": foreign_country_code,
-        "is_return": state == "FLYING_HOME", "is_traveling": traveling, "is_abroad": state == "ABROAD",
-        "direction_source": direction_source, "available_in_torn_at": available_at,
-        "available_in_torn_source": available_source, "available_in_torn_exact": available_exact,
-        "diagnostic": {"interpreted_state": state, "previous_state": previous, "direction_source": direction_source,
-            "api_status_state": raw.get("status_state"), "api_description": raw.get("description"),
-            "api_travel_destination": destination_name or None, "route_from": route_from, "route_to": route_to,
-            "destination_code": destination_code, "foreign_country_code": foreign_country_code,
-            "travel_timestamp": timestamp or None, "travel_departed": departed or None, "travel_time_left": time_left,
-            "available_in_torn_at": available_at, "available_in_torn_source": available_source,
-            "available_in_torn_exact": available_exact}}
-    _last.update(state=state, destination_code=destination_code, foreign_country_code=foreign_country_code,
-                 timestamp=timestamp or None, departed=departed or None)
+        "state": state,
+        "destination_code": destination_code,
+        "foreign_country_code": foreign_country_code,
+        "is_return": state == "FLYING_HOME",
+        "is_traveling": traveling,
+        "is_abroad": state == "ABROAD",
+        "direction_source": direction_source,
+        "available_in_torn_at": available_at,
+        "available_in_torn_source": available_source,
+        "available_in_torn_exact": available_exact,
+        "diagnostic": {
+            "interpreted_state": state,
+            "previous_state": previous,
+            "direction_source": direction_source,
+            "api_status_state": raw.get("status_state"),
+            "api_description": raw.get("description"),
+            "api_travel_destination": destination_name or None,
+            "route_from": route_from,
+            "route_to": route_to,
+            "destination_code": destination_code,
+            "foreign_country_code": foreign_country_code,
+            "travel_timestamp": timestamp or None,
+            "travel_departed": departed or None,
+            "travel_time_left": time_left,
+            "available_in_torn_at": available_at,
+            "available_in_torn_source": available_source,
+            "available_in_torn_exact": available_exact,
+        },
+    })
+    _last.update(
+        state=state,
+        destination_code=destination_code,
+        foreign_country_code=foreign_country_code,
+        timestamp=timestamp or None,
+        departed=departed or None,
+    )
     return raw
 
 
@@ -184,7 +217,9 @@ def _destination_stock_payload(capacity: int = 17, sale_fee: float = 0.05) -> di
     rows = []
     for raw in country.get("items") or []:
         try:
-            qty = max(0, int(raw.get("quantity") or 0)); cost = max(0, int(raw.get("cost") or 0)); market = max(0, int(raw.get("marketValue") or 0))
+            qty = max(0, int(raw.get("quantity") or 0))
+            cost = max(0, int(raw.get("cost") or 0))
+            market = max(0, int(raw.get("marketValue") or 0))
         except (TypeError, ValueError):
             continue
         if qty <= 0 or cost <= 0:
@@ -193,9 +228,17 @@ def _destination_stock_payload(capacity: int = 17, sale_fee: float = 0.05) -> di
         net_sale = int(adjusted_sale * (1.0 - max(0.0, min(.25, float(sale_fee)))))
         conservative_profit = net_sale - cost
         headline_profit = int(raw.get("profitPerItem") or (market - cost))
-        rows.append({"item_id": int(raw.get("itemId") or 0), "name": raw.get("itemName") or "Unknown",
-            "stock": qty, "cost": cost, "market_value": market, "headline_profit_each": headline_profit,
-            "profit_each": conservative_profit, "confidence": round(conf, 3), "confidence_label": conf_label})
+        rows.append({
+            "item_id": int(raw.get("itemId") or 0),
+            "name": raw.get("itemName") or "Unknown",
+            "stock": qty,
+            "cost": cost,
+            "market_value": market,
+            "headline_profit_each": headline_profit,
+            "profit_each": conservative_profit,
+            "confidence": round(conf, 3),
+            "confidence_label": conf_label,
+        })
 
     profitable = [x for x in rows if x["profit_each"] > 0]
     candidates = profitable if profitable else [x for x in rows if x["headline_profit_each"] > 0]
@@ -204,13 +247,27 @@ def _destination_stock_payload(capacity: int = 17, sale_fee: float = 0.05) -> di
     load = []
     for x in candidates:
         take = min(remaining, x["stock"])
-        if take <= 0: continue
-        row = dict(x); row["buy"] = take; load.append(row); remaining -= take
-        if remaining <= 0: break
-    return {"ok": True, "country": code, "country_name": ti.COUNTRY_NAMES.get(code, str(code).upper()),
-        "updated_at": country.get("updatedAt"), "age_seconds": round(age_s), "stocked_count": len(rows),
-        "profitable_count": len(profitable), "used_headline_fallback": bool(candidates and not profitable),
-        "load": load, "items": rows, "travel": travel}
+        if take <= 0:
+            continue
+        row = dict(x)
+        row["buy"] = take
+        load.append(row)
+        remaining -= take
+        if remaining <= 0:
+            break
+    return {
+        "ok": True,
+        "country": code,
+        "country_name": ti.COUNTRY_NAMES.get(code, str(code).upper()),
+        "updated_at": country.get("updatedAt"),
+        "age_seconds": round(age_s),
+        "stocked_count": len(rows),
+        "profitable_count": len(profitable),
+        "used_headline_fallback": bool(candidates and not profitable),
+        "load": load,
+        "items": rows,
+        "travel": travel,
+    }
 
 
 @app.get("/api/travel-intelligence/destination-stock")
