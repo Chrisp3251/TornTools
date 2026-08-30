@@ -8,7 +8,7 @@ import mug_scout
 import mug_scout_v034
 from mug_scout_v034 import app
 
-MUG_SCOUT_VERSION = "0.4.1"
+MUG_SCOUT_VERSION = "0.4.2"
 MIN_INACTIVE_DAYS = 15
 MAX_INACTIVE_DAYS = 100
 
@@ -34,7 +34,7 @@ async def mug_scout_search_v3(
     maxff: float = Query(3.0, ge=1.0, le=10.0),
     minlevel: int = Query(15, ge=1, le=100),
     maxlevel: int = Query(60, ge=1, le=100),
-    limit: int = Query(12, ge=1, le=30),
+    limit: int = Query(12, ge=1, le=50),
     factionless: int = Query(0, ge=0, le=1),
     mininactive_days: int = Query(15, ge=15, le=100),
     maxinactive_days: int = Query(100, ge=15, le=100),
@@ -94,10 +94,11 @@ async def mug_scout_search_v3(
             if min_seconds <= age <= max_seconds:
                 eligible.append((target, age))
 
-        # Prefer the more recently inactive portion of the window instead of
-        # letting the oldest eligible accounts dominate the result set.
+        # Keep the full valid FFScouter pool available to the scoring layer.
+        # Similar-target mode needs breadth; cutting to the 30 most recent here
+        # made its results look nearly identical to the normal search.
         eligible.sort(key=lambda pair: pair[1])
-        eligible = eligible[:30]
+        eligible = eligible[:50]
         sem = asyncio.Semaphore(4)
 
         async def enrich_one(pair):
@@ -185,6 +186,8 @@ async def mug_scout_search_v3(
             "mininactive_days": mininactive_days,
             "maxinactive_days": maxinactive_days,
             "ffscouter_inactive_pool": True,
+            "source_candidates": len(raw_targets),
+            "eligible_candidates": len(eligible),
         },
         "items": rows,
         "notes": [
