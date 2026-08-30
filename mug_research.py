@@ -11,7 +11,7 @@ from mug_scout_v036 import app
 
 BASE = Path(__file__).resolve().parent
 DB_PATH = BASE / "torntools.sqlite3"
-MUG_RESEARCH_VERSION = "0.4.2"
+MUG_RESEARCH_VERSION = "0.4.3"
 
 
 class MugResultPayload(BaseModel):
@@ -86,7 +86,8 @@ async def mug_scout_search_v4(
     maxlevel: int = 100,
     limit: int = 20,
     factionless: int = 0,
-    mininactive_days: int = 14,
+    mininactive_days: int = 15,
+    maxinactive_days: int = 100,
 ):
     result = await _original_search(
         minff=minff,
@@ -96,6 +97,7 @@ async def mug_scout_search_v4(
         limit=limit,
         factionless=factionless,
         mininactive_days=mininactive_days,
+        maxinactive_days=maxinactive_days,
     )
     items = result.get("items") or []
     history = mug_history_map([x.get("player_id") for x in items])
