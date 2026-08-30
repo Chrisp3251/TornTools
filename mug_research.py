@@ -1,3 +1,4 @@
+import math
 import sqlite3
 import time
 from pathlib import Path
@@ -11,7 +12,7 @@ from mug_scout_v036 import app
 
 BASE = Path(__file__).resolve().parent
 DB_PATH = BASE / "torntools.sqlite3"
-MUG_RESEARCH_VERSION = "0.4.3"
+MUG_RESEARCH_VERSION = "0.4.4"
 
 
 class MugResultPayload(BaseModel):
@@ -75,6 +76,49 @@ def mug_history_map(player_ids):
     }
 
 
+def _latest_reference(player_id: int):
+    with sqlite3.connect(DB_PATH) as c:
+        row = c.execute(
+            """SELECT ts,player_id,player_name,amount,fair_fight,bs_estimate,inactive_days,
+                      property_name,property_ownership,property_market_price,target_score,status
+               FROM mug_results WHERE player_id=? ORDER BY ts DESC LIMIT 1""",
+            (int(player_id),),
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "ts": row[0], "player_id": int(row[1]), "player_name": row[2] or f"Player {row[1]}",
+        "amount": int(row[3] or 0), "fair_fight": row[4], "bs_estimate": row[5], "inactive_days": row[6],
+        "property_name": row[7], "property_ownership": row[8], "property_market_price": row[9],
+        "target_score": row[10], "status": row[11],
+    }
+
+
+def _similarity(item, ref):
+    parts=[]
+    ff=item.get("fair_fight")
+    if ff is not None and ref.get("fair_fight") is not None:
+        parts.append((0.32, max(0.0, 1.0-abs(float(ff)-float(ref["fair_fight"]))/0.9)))
+    age=item.get("last_action_age_seconds")
+    if age is not None and ref.get("inactive_days") is not None:
+        days=float(age)/86400.0
+        parts.append((0.34, max(0.0, 1.0-abs(days-float(ref["inactive_days"]))/25.0)))
+    prop=item.get("property") or {}
+    cp=prop.get("market_price"); rp=ref.get("property_market_price")
+    if cp and rp and cp>0 and rp>0:
+        parts.append((0.20, max(0.0, 1.0-abs(math.log10(float(cp))-math.log10(float(rp)))/1.25)))
+    own=str(prop.get("ownership") or "").lower(); rown=str(ref.get("property_ownership") or "").lower()
+    if own and rown and own!="unknown" and rown!="unknown":
+        parts.append((0.07, 1.0 if own==rown else 0.2))
+    score=(item.get("scores") or {}).get("mug")
+    if score is not None and ref.get("target_score") is not None:
+        parts.append((0.07, max(0.0, 1.0-abs(float(score)-float(ref["target_score"]))/35.0)))
+    if not parts:
+        return 0.0
+    total=sum(w for w,_ in parts)
+    return round(sum(w*v for w,v in parts)/total*100.0,1)
+
+
 _original_search = mug_scout_v036.mug_scout_search_v3
 
 
@@ -88,16 +132,32 @@ async def mug_scout_search_v4(
     factionless: int = 0,
     mininactive_days: int = 15,
     maxinactive_days: int = 100,
+    reference_player_id: int | None = None,
 ):
+    ref = _latest_reference(reference_player_id) if reference_player_id else None
+    if reference_player_id and not ref:
+        raise HTTPException(404, f"No recorded Mug Result found for player #{reference_player_id}. Record that mug first so TornTools has the original signals.")
+
+    search_minff=minff; search_maxff=maxff; search_mininactive=mininactive_days; search_maxinactive=maxinactive_days
+    if ref:
+        if ref.get("fair_fight") is not None:
+            center=float(ref["fair_fight"])
+            search_minff=max(1.0, center-0.55)
+            search_maxff=min(10.0, center+0.55)
+        if ref.get("inactive_days") is not None:
+            center=float(ref["inactive_days"])
+            search_mininactive=max(15, int(math.floor(center-15)))
+            search_maxinactive=min(100, int(math.ceil(center+15)))
+
     result = await _original_search(
-        minff=minff,
-        maxff=maxff,
+        minff=search_minff,
+        maxff=search_maxff,
         minlevel=minlevel,
         maxlevel=maxlevel,
-        limit=limit,
+        limit=30 if ref else limit,
         factionless=factionless,
-        mininactive_days=mininactive_days,
-        maxinactive_days=maxinactive_days,
+        mininactive_days=search_mininactive,
+        maxinactive_days=search_maxinactive,
     )
     items = result.get("items") or []
     history = mug_history_map([x.get("player_id") for x in items])
@@ -109,9 +169,35 @@ async def mug_scout_search_v4(
             "last_mug_ts": h.get("last_mug_ts"),
             "best_mug": h.get("best_mug", 0),
         }
+        if ref:
+            item["similarity_score"]=_similarity(item,ref)
+
+    if ref:
+        items=[x for x in items if int(x.get("player_id") or 0)!=int(ref["player_id"])]
+        items.sort(key=lambda x:(float(x.get("similarity_score") or 0), float((x.get("scores") or {}).get("mug") or 0)), reverse=True)
+        items=items[:int(limit)]
+        result["items"]=items
+        result["reference_target"]={
+            **ref,
+            "search_window":{
+                "minff":round(search_minff,2),"maxff":round(search_maxff,2),
+                "mininactive_days":search_mininactive,"maxinactive_days":search_maxinactive,
+            },
+        }
+        result.setdefault("notes", []).insert(0,
+            f"Similarity mode: matching the recorded signals from {ref['player_name']} #{ref['player_id']} — FF, inactivity, property value/ownership, and original target score.")
+
     result["version"] = MUG_RESEARCH_VERSION
     result.setdefault("notes", []).append("Mug counters come from results you manually record in TornTools.")
     return result
+
+
+@app.get("/api/mug-research/reference/{player_id}")
+async def mug_reference(player_id:int):
+    ref=_latest_reference(player_id)
+    if not ref:
+        raise HTTPException(404, f"No recorded Mug Result found for player #{player_id}")
+    return {"ok":True,"reference":ref}
 
 
 @app.post("/api/mug-research/result")
