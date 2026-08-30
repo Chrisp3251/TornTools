@@ -12,7 +12,7 @@ from mug_scout_v036 import app
 
 BASE = Path(__file__).resolve().parent
 DB_PATH = BASE / "torntools.sqlite3"
-MUG_RESEARCH_VERSION = "0.4.4"
+MUG_RESEARCH_VERSION = "0.4.5"
 
 
 class MugResultPayload(BaseModel):
@@ -94,25 +94,44 @@ def _latest_reference(player_id: int):
     }
 
 
+def _safe_positive(v):
+    try:
+        n=float(v)
+        return n if n>0 else None
+    except (TypeError,ValueError):
+        return None
+
+
 def _similarity(item, ref):
     parts=[]
     ff=item.get("fair_fight")
     if ff is not None and ref.get("fair_fight") is not None:
-        parts.append((0.32, max(0.0, 1.0-abs(float(ff)-float(ref["fair_fight"]))/0.9)))
+        parts.append((0.24, max(0.0, 1.0-abs(float(ff)-float(ref["fair_fight"]))/0.75)))
+
     age=item.get("last_action_age_seconds")
     if age is not None and ref.get("inactive_days") is not None:
         days=float(age)/86400.0
-        parts.append((0.34, max(0.0, 1.0-abs(days-float(ref["inactive_days"]))/25.0)))
+        parts.append((0.28, max(0.0, 1.0-abs(days-float(ref["inactive_days"]))/18.0)))
+
+    # FFScouter's human BS label is often a coarse bucket. Prefer its raw numeric
+    # estimate when present so two players in the same displayed bucket can still differ.
+    cb=_safe_positive(item.get("bs_estimate")); rb=_safe_positive(ref.get("bs_estimate"))
+    if cb and rb:
+        parts.append((0.22, max(0.0, 1.0-abs(math.log10(cb)-math.log10(rb))/0.9)))
+
     prop=item.get("property") or {}
-    cp=prop.get("market_price"); rp=ref.get("property_market_price")
-    if cp and rp and cp>0 and rp>0:
-        parts.append((0.20, max(0.0, 1.0-abs(math.log10(float(cp))-math.log10(float(rp)))/1.25)))
+    cp=_safe_positive(prop.get("market_price")); rp=_safe_positive(ref.get("property_market_price"))
+    if cp and rp:
+        parts.append((0.15, max(0.0, 1.0-abs(math.log10(cp)-math.log10(rp))/1.0)))
+
     own=str(prop.get("ownership") or "").lower(); rown=str(ref.get("property_ownership") or "").lower()
     if own and rown and own!="unknown" and rown!="unknown":
-        parts.append((0.07, 1.0 if own==rown else 0.2))
+        parts.append((0.05, 1.0 if own==rown else 0.2))
+
     score=(item.get("scores") or {}).get("mug")
     if score is not None and ref.get("target_score") is not None:
-        parts.append((0.07, max(0.0, 1.0-abs(float(score)-float(ref["target_score"]))/35.0)))
+        parts.append((0.06, max(0.0, 1.0-abs(float(score)-float(ref["target_score"]))/30.0)))
+
     if not parts:
         return 0.0
     total=sum(w for w,_ in parts)
@@ -142,19 +161,19 @@ async def mug_scout_search_v4(
     if ref:
         if ref.get("fair_fight") is not None:
             center=float(ref["fair_fight"])
-            search_minff=max(1.0, center-0.55)
-            search_maxff=min(10.0, center+0.55)
+            search_minff=max(1.0, center-0.65)
+            search_maxff=min(10.0, center+0.65)
         if ref.get("inactive_days") is not None:
             center=float(ref["inactive_days"])
-            search_mininactive=max(15, int(math.floor(center-15)))
-            search_maxinactive=min(100, int(math.ceil(center+15)))
+            search_mininactive=max(15, int(math.floor(center-18)))
+            search_maxinactive=min(100, int(math.ceil(center+18)))
 
     result = await _original_search(
         minff=search_minff,
         maxff=search_maxff,
         minlevel=minlevel,
         maxlevel=maxlevel,
-        limit=30 if ref else limit,
+        limit=50 if ref else limit,
         factionless=factionless,
         mininactive_days=search_mininactive,
         maxinactive_days=search_maxinactive,
@@ -185,7 +204,7 @@ async def mug_scout_search_v4(
             },
         }
         result.setdefault("notes", []).insert(0,
-            f"Similarity mode: matching the recorded signals from {ref['player_name']} #{ref['player_id']} — FF, inactivity, property value/ownership, and original target score.")
+            f"Similarity mode: matching {ref['player_name']} #{ref['player_id']} using FF, inactivity, raw FFScouter BS estimate, property value/ownership, and target score across the full eligible candidate pool.")
 
     result["version"] = MUG_RESEARCH_VERSION
     result.setdefault("notes", []).append("Mug counters come from results you manually record in TornTools.")
