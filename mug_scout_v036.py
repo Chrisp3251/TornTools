@@ -8,7 +8,7 @@ import mug_scout
 import mug_scout_v034
 from mug_scout_v034 import app
 
-MUG_SCOUT_VERSION = "0.4.0"
+MUG_SCOUT_VERSION = "0.4.1"
 MIN_INACTIVE_DAYS = 15
 MAX_INACTIVE_DAYS = 100
 
@@ -52,8 +52,8 @@ async def mug_scout_search_v3(
     if not ff_key:
         raise HTTPException(401, "No FFScouter API key found. Add FFSCOUTER_API_KEY=... to TornTools .env and restart.")
 
-    # FFScouter supplies the native inactive pool. TornTools then keeps only
-    # targets whose last action falls inside the requested 15-100 day window.
+    # FFScouter accepts at most 50 targets per request. TornTools then filters
+    # that inactive pool down to only targets inside the requested 15-100 day window.
     params = {
         "key": ff_key,
         "minlevel": int(minlevel),
@@ -61,7 +61,7 @@ async def mug_scout_search_v3(
         "inactiveonly": 1,
         "minff": float(minff),
         "maxff": float(maxff),
-        "limit": 100,
+        "limit": 50,
         "factionless": int(factionless),
     }
 
@@ -95,7 +95,7 @@ async def mug_scout_search_v3(
                 eligible.append((target, age))
 
         # Prefer the more recently inactive portion of the window instead of
-        # letting multi-year abandoned accounts dominate the result set.
+        # letting the oldest eligible accounts dominate the result set.
         eligible.sort(key=lambda pair: pair[1])
         eligible = eligible[:30]
         sem = asyncio.Semaphore(4)
