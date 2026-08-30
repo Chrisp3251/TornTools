@@ -8,19 +8,22 @@ import mug_scout
 import mug_scout_v034
 from mug_scout_v034 import app
 
-MUG_SCOUT_VERSION = "0.3.9"
-SUPPORTED_INACTIVE_DAYS = {0, 14, 21, 30}
+MUG_SCOUT_VERSION = "0.4.0"
+MIN_INACTIVE_DAYS = 15
+MAX_INACTIVE_DAYS = 100
 
 
 def _retaliation_score(age_seconds):
     if age_seconds is None:
         return 0.0, "Unknown"
     days = float(age_seconds) / 86400.0
-    if days >= 30:
+    if days >= 60:
         return 100.0, "Very cold"
+    if days >= 30:
+        return 92.0, "Cold"
     if days >= 21:
-        return 90.0, "Cold"
-    if days >= 14:
+        return 86.0, "Inactive"
+    if days >= 15:
         return 80.0, "Inactive"
     return 10.0, "Recent"
 
@@ -33,26 +36,13 @@ async def mug_scout_search_v3(
     maxlevel: int = Query(60, ge=1, le=100),
     limit: int = Query(12, ge=1, le=30),
     factionless: int = Query(0, ge=0, le=1),
-    mininactive_days: int = Query(14, ge=0, le=30),
+    mininactive_days: int = Query(15, ge=15, le=100),
+    maxinactive_days: int = Query(100, ge=15, le=100),
 ):
-    mininactive_days = int(mininactive_days)
-    if mininactive_days not in SUPPORTED_INACTIVE_DAYS:
-        raise HTTPException(400, "Cold target mode must be one of: 0 (Any), 14, 21, or 30 days inactive")
-
-    if mininactive_days == 0:
-        result = await mug_scout_v034.mug_scout_search_v2(
-            minff=minff,
-            maxff=maxff,
-            minlevel=minlevel,
-            maxlevel=maxlevel,
-            limit=limit,
-            factionless=factionless,
-            mininactive_days=0,
-        )
-        result["version"] = MUG_SCOUT_VERSION
-        result.setdefault("notes", []).insert(0, "Cold-target mode: Any activity.")
-        return result
-
+    mininactive_days = max(MIN_INACTIVE_DAYS, int(mininactive_days))
+    maxinactive_days = min(MAX_INACTIVE_DAYS, int(maxinactive_days))
+    if mininactive_days > maxinactive_days:
+        raise HTTPException(400, "Minimum inactive days cannot exceed maximum inactive days")
     if minff > maxff:
         raise HTTPException(400, "Minimum FF cannot exceed maximum FF")
     if minlevel > maxlevel:
@@ -62,8 +52,8 @@ async def mug_scout_search_v3(
     if not ff_key:
         raise HTTPException(401, "No FFScouter API key found. Add FFSCOUTER_API_KEY=... to TornTools .env and restart.")
 
-    # All supported cold modes source from FFScouter's native 14+ day inactive pool.
-    # TornTools then applies the exact 14/21/30+ last_action cutoff locally.
+    # FFScouter supplies the native inactive pool. TornTools then keeps only
+    # targets whose last action falls inside the requested 15-100 day window.
     params = {
         "key": ff_key,
         "minlevel": int(minlevel),
@@ -71,7 +61,7 @@ async def mug_scout_search_v3(
         "inactiveonly": 1,
         "minff": float(minff),
         "maxff": float(maxff),
-        "limit": 50,
+        "limit": 100,
         "factionless": int(factionless),
     }
 
@@ -92,7 +82,8 @@ async def mug_scout_search_v3(
             raise HTTPException(502, "FFScouter returned an unexpected target response")
 
         now = int(time.time())
-        cutoff_seconds = mininactive_days * 86400
+        min_seconds = mininactive_days * 86400
+        max_seconds = maxinactive_days * 86400
         eligible = []
         for target in raw_targets:
             try:
@@ -100,9 +91,12 @@ async def mug_scout_search_v3(
             except (TypeError, ValueError):
                 continue
             age = max(0, now - last_action)
-            if age >= cutoff_seconds:
+            if min_seconds <= age <= max_seconds:
                 eligible.append((target, age))
 
+        # Prefer the more recently inactive portion of the window instead of
+        # letting multi-year abandoned accounts dominate the result set.
+        eligible.sort(key=lambda pair: pair[1])
         eligible = eligible[:30]
         sem = asyncio.Semaphore(4)
 
@@ -174,7 +168,7 @@ async def mug_scout_search_v3(
             "enrichment_error": extra.get("error"),
         })
 
-    rows.sort(key=lambda x: (x["scores"]["mug"], x["scores"]["retaliation"], x["scores"]["fight"]), reverse=True)
+    rows.sort(key=lambda x: (x["scores"]["mug"], x["scores"]["fight"]), reverse=True)
     rows = rows[: int(limit)]
 
     return {
@@ -189,13 +183,14 @@ async def mug_scout_search_v3(
             "limit": limit,
             "factionless": bool(factionless),
             "mininactive_days": mininactive_days,
+            "maxinactive_days": maxinactive_days,
             "ffscouter_inactive_pool": True,
         },
         "items": rows,
         "notes": [
-            f"Cold-target mode: {mininactive_days}+ days since last action.",
-            "FFScouter native 14+ day inactive pool used, then TornTools applied the exact cutoff.",
+            f"Inactive window: {mininactive_days}-{maxinactive_days} days since last action.",
+            "Accounts inactive longer than the maximum are excluded instead of dominating the results.",
             f"FFScouter key source: {ff_key_source}.",
-            "Cold-target Mug Score rewards fight suitability and longer inactivity to reduce retaliation risk; it still cannot know cash on hand.",
+            "Mug Score ranks matchup and public wealth/safety hints; it still cannot know cash on hand.",
         ],
     }
