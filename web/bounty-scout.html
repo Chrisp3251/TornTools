@@ -58,6 +58,12 @@
       <label>Unknown BS
         <select id="includeUnknown"><option value="0" selected>Hide</option><option value="1">Show</option></select>
       </label>
+      <label>Availability
+        <select id="availabilityMode"><option value="ready_or_soon" selected>Ready + hospital soon</option><option value="ready">Ready only</option><option value="all">Show all</option></select>
+      </label>
+      <label>Hospital soon ≤
+        <select id="hospitalSoonMinutes"><option value="15">15 min</option><option value="30" selected>30 min</option><option value="60">60 min</option></select>
+      </label>
     </div>
 
     <div class="toolbar" style="margin-top:14px">
@@ -145,7 +151,9 @@ async function scanBounties(){
         const sm=new Map((sd.items||[]).map(s=>[String(s.player_id),s]));
         for(const el of statusCells){
           const s=sm.get(el.dataset.playerId);
-          if(!s){el.textContent='Unknown';continue;}
+          if(!s){el.textContent='Unknown';el.dataset.kind='unknown';continue;}
+          el.dataset.kind=s.kind||'unknown';
+          el.dataset.secondsLeft=s.seconds_left==null?'':String(s.seconds_left);
           if(s.kind==='ready') el.innerHTML='<span class="good">READY</span>';
           else if(s.kind==='hospital'){
             const mins=s.seconds_left==null?'?':Math.ceil(Number(s.seconds_left)/60);
@@ -156,6 +164,23 @@ async function scanBounties(){
         }
       }catch(e){}
     }
+
+    const mode=document.getElementById('availabilityMode')?.value||'ready_or_soon';
+    const soon=Number(document.getElementById('hospitalSoonMinutes')?.value||30)*60;
+    let visible=0;
+    document.querySelectorAll('#rows tr').forEach(row=>{
+      const cell=row.querySelector('.status-cell');
+      if(!cell)return;
+      const kind=cell.dataset.kind||'unknown';
+      const left=Number(cell.dataset.secondsLeft||0);
+      let show=true;
+      if(mode==='ready') show=kind==='ready';
+      else if(mode==='ready_or_soon') show=kind==='ready'||(kind==='hospital'&&left>0&&left<=soon);
+      row.style.display=show?'':'none';
+      if(show) visible++;
+    });
+    document.getElementById('count').textContent=visible+' targets';
+
     if(d.warnings?.length){
       err.textContent='FFScouter warning: '+d.warnings.join(' | ');
       err.style.display='block';
@@ -167,6 +192,8 @@ async function scanBounties(){
     btn.disabled=false; btn.textContent='Scan Bounties';
   }
 }
+document.getElementById('availabilityMode')?.addEventListener('change',scanBounties);
+document.getElementById('hospitalSoonMinutes')?.addEventListener('change',scanBounties);
 </script>
 </body>
 </html>
