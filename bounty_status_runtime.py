@@ -15,12 +15,15 @@ app = eq_runtime.app
 async def _read_status(client: httpx.AsyncClient, player_id: int):
     data = await app_module._torn_get(
         client,
-        "/user",
-        {"id": int(player_id), "selections": "basic"},
+        f"/user/{int(player_id)}/basic",
         error_text="player status",
     )
-    profile = data.get("profile") if isinstance(data, dict) and isinstance(data.get("profile"), dict) else {}
-    status = profile.get("status") if isinstance(profile.get("status"), dict) else {}
+    if isinstance(data, dict) and isinstance(data.get("status"), dict):
+        status = data.get("status")
+    elif isinstance(data, dict) and isinstance(data.get("profile"), dict) and isinstance(data["profile"].get("status"), dict):
+        status = data["profile"].get("status")
+    else:
+        status = {}
     until = status.get("until")
     try:
         until = int(until) if until is not None else None
