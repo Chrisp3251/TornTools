@@ -76,9 +76,9 @@
     <div class="table-wrap">
       <table class="research-table bounty-table">
         <thead><tr>
-          <th>Target</th><th>Level</th><th>Reward</th><th>Qty</th><th>Est. BS</th><th>Ratio</th><th>Fair Fight</th><th>Reason</th><th>Actions</th>
+          <th>Target</th><th>Level</th><th>Reward</th><th>Qty</th><th>Est. BS</th><th>Ratio</th><th>Fair Fight</th><th>Reason</th><th>Status</th><th>Actions</th>
         </tr></thead>
-        <tbody id="rows"><tr><td colspan="9" class="muted">Run a scan to load bounty targets.</td></tr></tbody>
+        <tbody id="rows"><tr><td colspan="10" class="muted">Run a scan to load bounty targets.</td></tr></tbody>
       </table>
     </div>
     <div class="research-note" style="margin-top:12px"><strong>Important:</strong> target battle stats are FFScouter estimates, not exact Torn stats. A lower total does not guarantee a win because distribution, merits, gear, passives, temps, and current buffs matter.</div>
@@ -120,7 +120,7 @@ async function scanBounties(){
     document.getElementById('status').textContent='Updated';
     const body=document.getElementById('rows');
     if(!d.items.length){
-      body.innerHTML='<tr><td colspan="9" class="muted">No bounty targets matched these filters.</td></tr>';
+      body.innerHTML='<tr><td colspan="10" class="muted">No bounty targets matched these filters.</td></tr>';
     }else{
       body.innerHTML=d.items.map(x=>`
         <tr>
@@ -132,8 +132,29 @@ async function scanBounties(){
           <td class="${ratioClass(x.bs_ratio_pct)}">${x.bs_ratio_pct==null?'Unknown':x.bs_ratio_pct+'%'}</td>
           <td>${x.fair_fight??'—'}</td>
           <td>${esc(x.reason||'—')}</td>
+          <td class="status-cell" data-player-id="${x.target_id}"><span class="mini">Checking…</span></td>
           <td><div class="actions"><a href="${x.profile_url}" target="_blank" rel="noopener">Profile</a><a href="${x.attack_url}" target="_blank" rel="noopener">Attack</a></div></td>
         </tr>`).join('');
+    }
+    const statusCells=[...document.querySelectorAll('.status-cell[data-player-id]')];
+    if(statusCells.length){
+      const ids=statusCells.map(el=>el.dataset.playerId).join(',');
+      try{
+        const sr=await fetch('/api/bounty-scout/statuses?ids='+encodeURIComponent(ids));
+        const sd=await sr.json();
+        const sm=new Map((sd.items||[]).map(s=>[String(s.player_id),s]));
+        for(const el of statusCells){
+          const s=sm.get(el.dataset.playerId);
+          if(!s){el.textContent='Unknown';continue;}
+          if(s.kind==='ready') el.innerHTML='<span class="good">READY</span>';
+          else if(s.kind==='hospital'){
+            const mins=s.seconds_left==null?'?':Math.ceil(Number(s.seconds_left)/60);
+            el.innerHTML='<span class="warn">HOSPITAL</span><div class="mini">~'+mins+' min left</div>';
+          } else if(s.kind==='traveling') el.innerHTML='<span class="bad">TRAVELING</span>';
+          else if(s.kind==='jail') el.innerHTML='<span class="bad">JAILED</span>';
+          else el.textContent=s.description||s.state||'Unknown';
+        }
+      }catch(e){}
     }
     if(d.warnings?.length){
       err.textContent='FFScouter warning: '+d.warnings.join(' | ');
