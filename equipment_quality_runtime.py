@@ -12,9 +12,9 @@ import httpx
 from fastapi import HTTPException
 
 import app as core
-import travel_state_runtime as travel_runtime
+import bounty_scout as bounty_runtime
 
-app = travel_runtime.app
+app = bounty_runtime.app
 
 
 def _monotonic_quality_ask_extended(rows, quality):
