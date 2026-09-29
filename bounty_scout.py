@@ -40,6 +40,28 @@ def _own_total_battlestats(data: dict[str, Any]) -> tuple[int, dict[str, int]]:
     return sum(stats.values()), stats
 
 
+async def _fetch_bounty_pages(client: httpx.AsyncClient, max_pages: int = 10) -> tuple[list[dict[str, Any]], int]:
+    all_rows: list[dict[str, Any]] = []
+    pages = 0
+    for page in range(max_pages):
+        offset = page * 100
+        data = await app_module._torn_get(
+            client,
+            "/torn/bounties",
+            {"limit": 100, "offset": offset},
+            error_text="bounties",
+        )
+        rows = _bounty_rows(data)
+        all_rows.extend(rows)
+        pages += 1
+
+        metadata = data.get("_metadata") if isinstance(data, dict) else None
+        links = metadata.get("links") if isinstance(metadata, dict) and isinstance(metadata.get("links"), dict) else {}
+        if not links.get("next") or len(rows) < 100:
+            break
+    return all_rows, pages
+
+
 def _bounty_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
     rows = data.get("bounties") if isinstance(data, dict) else None
     if not isinstance(rows, list):
@@ -204,17 +226,18 @@ async def bounty_scout_search(
         raise HTTPException(401, "No FFScouter API key found. Add FFSCOUTER_API_KEY to .env and restart TornTools.")
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        own_data, bounty_data = await asyncio.gather(
+        own_data, bounty_page_result = await asyncio.gather(
             app_module._torn_get(client, "/user/battlestats", error_text="battle stats"),
-            app_module._torn_get(client, "/torn/bounties", {"limit": 100, "offset": 0}, error_text="bounties"),
+            _fetch_bounty_pages(client, max_pages=10),
         )
+        bounty_rows_all, bounty_pages = bounty_page_result
 
         own_total, own_stats = _own_total_battlestats(own_data)
         if own_total <= 0:
             raise HTTPException(502, "Could not determine your total battle stats from Torn")
 
         bounties = [
-            row for row in _bounty_rows(bounty_data)
+            row for row in bounty_rows_all
             if row["reward"] >= int(min_reward)
             and (row["target_level"] is None or row["target_level"] <= int(max_level))
         ]
@@ -287,6 +310,7 @@ async def bounty_scout_search(
             "include_unknown": bool(include_unknown),
         },
         "source_bounties": len(bounties),
+        "bounty_pages_scanned": bounty_pages,
         "unknown_estimates": unknown_count,
         "items": items,
         "warnings": ff_errors[:5],
