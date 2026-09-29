@@ -114,7 +114,9 @@ async function scanBounties(){
     min_reward:document.getElementById('minReward').value||0,
     max_level:document.getElementById('maxLevel').value||100,
     limit:document.getElementById('limit').value||50,
-    include_unknown:document.getElementById('includeUnknown').value
+    include_unknown:document.getElementById('includeUnknown').value,
+    availability:document.getElementById('availabilityMode')?.value||'ready_or_soon',
+    hospital_soon_minutes:document.getElementById('hospitalSoonMinutes')?.value||30
   });
   try{
     const r=await fetch('/api/bounty-scout/search?'+qs.toString());
@@ -122,7 +124,8 @@ async function scanBounties(){
     if(!r.ok) throw new Error(d.detail||JSON.stringify(d));
     document.getElementById('yourStats').textContent='Your BS: '+(d.own_total_human||fmtNum(d.own_total_battlestats));
     document.getElementById('count').textContent=d.items.length+' targets';
-    document.getElementById('summary').textContent='Scanned '+d.source_bounties+' qualifying bounty rows across '+(d.bounty_pages_scanned||1)+' page(s) · '+d.unknown_estimates+' without estimates';
+    const sc=d.status_counts||{};
+    document.getElementById('summary').textContent='Scanned '+d.source_bounties+' qualifying bounty rows across '+(d.bounty_pages_scanned||1)+' page(s) · checked '+(d.status_checked||0)+' statuses · ready '+(sc.ready||0)+' · hosp '+(sc.hospital||0)+' · travel '+(sc.traveling||0)+' · jail '+(sc.jail||0)+' · unknown '+(sc.unknown||0);
     document.getElementById('status').textContent='Updated';
     const body=document.getElementById('rows');
     if(!d.items.length){
