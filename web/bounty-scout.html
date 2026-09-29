@@ -82,9 +82,9 @@
     <div class="table-wrap">
       <table class="research-table bounty-table">
         <thead><tr>
-          <th>Target</th><th>Level</th><th>Reward</th><th>Qty</th><th>Est. BS</th><th>Ratio</th><th>Fair Fight</th><th>Reason</th><th>Status</th><th>Actions</th>
+          <th>Target</th><th>Level</th><th>Top bounty</th><th>Bounties</th><th>Total</th><th>Est. BS</th><th>Ratio</th><th>Fair Fight</th><th>Reason</th><th>Status</th><th>Actions</th>
         </tr></thead>
-        <tbody id="rows"><tr><td colspan="10" class="muted">Run a scan to load bounty targets.</td></tr></tbody>
+        <tbody id="rows"><tr><td colspan="11" class="muted">Run a scan to load bounty targets.</td></tr></tbody>
       </table>
     </div>
     <div class="research-note" style="margin-top:12px"><strong>Important:</strong> target battle stats are FFScouter estimates, not exact Torn stats. A lower total does not guarantee a win because distribution, merits, gear, passives, temps, and current buffs matter.</div>
@@ -125,18 +125,19 @@ async function scanBounties(){
     document.getElementById('yourStats').textContent='Your BS: '+(d.own_total_human||fmtNum(d.own_total_battlestats));
     document.getElementById('count').textContent=d.items.length+' targets';
     const sc=d.status_counts||{};
-    document.getElementById('summary').textContent='Scanned '+d.source_bounties+' qualifying bounty rows across '+(d.bounty_pages_scanned||1)+' page(s) · checked '+(d.status_checked||0)+' statuses · ready '+(sc.ready||0)+' · hosp '+(sc.hospital||0)+' · travel '+(sc.traveling||0)+' · jail '+(sc.jail||0)+' · unknown '+(sc.unknown||0);
+    document.getElementById('summary').textContent='Scanned '+d.source_bounties+' qualifying bounty rows across '+(d.bounty_pages_scanned||1)+' page(s) · '+(d.unique_targets||0)+' unique targets · checked '+(d.status_checked||0)+' statuses · ready '+(sc.ready||0)+' · hosp '+(sc.hospital||0)+' · travel '+(sc.traveling||0)+' · jail '+(sc.jail||0)+' · unknown '+(sc.unknown||0);
     document.getElementById('status').textContent='Updated';
     const body=document.getElementById('rows');
     if(!d.items.length){
-      body.innerHTML='<tr><td colspan="10" class="muted">No bounty targets matched these filters.</td></tr>';
+      body.innerHTML='<tr><td colspan="11" class="muted">No bounty targets matched these filters.</td></tr>';
     }else{
       body.innerHTML=d.items.map(x=>`
         <tr>
           <td><strong>${esc(x.target_name)}</strong><div class="mini">[${x.target_id}]</div></td>
           <td>${x.target_level??'—'}</td>
-          <td><strong>${fmtMoney(x.reward)}</strong></td>
-          <td>${x.quantity}</td>
+          <td><strong>${fmtMoney(x.highest_reward||x.reward)}</strong></td>
+          <td>${x.bounty_entries||1}</td>
+          <td><strong>${fmtMoney(x.total_reward||x.reward)}</strong><div class="mini">${x.quantity||1} payout${(x.quantity||1)===1?'':'s'}</div></td>
           <td><strong>${esc(x.bs_estimate_human||fmtNum(x.bs_estimate))}</strong><div class="mini">${esc(x.ff_source||'unknown source')}</div></td>
           <td class="${ratioClass(x.bs_ratio_pct)}">${x.bs_ratio_pct==null?'Unknown':x.bs_ratio_pct+'%'}</td>
           <td>${x.fair_fight??'—'}</td>
