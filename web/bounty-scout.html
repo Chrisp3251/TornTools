@@ -125,7 +125,8 @@ async function scanBounties(){
     document.getElementById('yourStats').textContent='Your BS: '+(d.own_total_human||fmtNum(d.own_total_battlestats));
     document.getElementById('count').textContent=d.items.length+' targets';
     const sc=d.status_counts||{};
-    document.getElementById('summary').textContent='Scanned '+d.source_bounties+' qualifying bounty rows across '+(d.bounty_pages_scanned||1)+' page(s) · '+(d.unique_targets||0)+' unique targets · checked '+(d.status_checked||0)+' statuses · ready '+(sc.ready||0)+' · hosp '+(sc.hospital||0)+' · travel '+(sc.traveling||0)+' · jail '+(sc.jail||0)+' · unknown '+(sc.unknown||0);
+    const trunc=d.bounty_board_truncated?' · BOARD STILL HAS MORE':'';
+    document.getElementById('summary').textContent='Board rows '+(d.board_rows_scanned||0)+' across '+(d.bounty_pages_scanned||1)+' page(s)'+trunc+' · '+d.source_bounties+' reward/level matches · '+(d.unique_targets||0)+' unique · '+(d.stat_matched_targets||0)+' stat matches · checked '+(d.status_checked||0)+' statuses · ready '+(sc.ready||0)+' · hosp '+(sc.hospital||0)+' · travel '+(sc.traveling||0)+' · jail '+(sc.jail||0)+' · unknown '+(sc.unknown||0);
     document.getElementById('status').textContent='Updated';
     const body=document.getElementById('rows');
     if(!d.items.length){
