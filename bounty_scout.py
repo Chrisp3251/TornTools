@@ -215,6 +215,8 @@ async def bounty_scout_search(
     max_level: int = Query(100, ge=1, le=100),
     limit: int = Query(50, ge=1, le=100),
     include_unknown: int = Query(0, ge=0, le=1),
+    availability: str = Query("ready_or_soon"),
+    hospital_soon_minutes: int = Query(30, ge=1, le=240),
 ):
     if min_ratio > max_ratio:
         raise HTTPException(400, "Minimum stat ratio cannot exceed maximum stat ratio")
@@ -293,7 +295,43 @@ async def bounty_scout_search(
         ),
         reverse=True,
     )
-    items = items[: int(limit)]
+
+    status_counts = {"ready": 0, "hospital": 0, "traveling": 0, "jail": 0, "unknown": 0}
+    status_checked = 0
+    status_errors = []
+
+    if availability != "all":
+        # Check availability BEFORE applying the result limit. Previously we
+        # limited to the top N by reward first, which could hide ready players
+        # if that top slice happened to be hospitalized/traveling.
+        candidates = items[:75]
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            status_map, status_errors = await _target_statuses(
+                client, [x["target_id"] for x in candidates]
+            )
+        filtered = []
+        for item in candidates:
+            info = _availability_info(status_map.get(item["target_id"]), hospital_soon_minutes)
+            kind = info["kind"] if info["kind"] in status_counts else "unknown"
+            status_counts[kind] += 1
+            status_checked += 1
+            item["status_kind"] = kind
+            item["status"] = info["label"]
+            item["status_until"] = info["until"]
+            item["status_seconds_left"] = info["seconds_left"]
+
+            keep = False
+            if availability == "ready":
+                keep = info["ready"]
+            elif availability == "hospital_soon":
+                keep = info["hospital_soon"]
+            else:
+                keep = info["ready"] or info["hospital_soon"]
+            if keep:
+                filtered.append(item)
+        items = filtered[: int(limit)]
+    else:
+        items = items[: int(limit)]
 
     return {
         "ok": True,
@@ -308,12 +346,16 @@ async def bounty_scout_search(
             "max_level": max_level,
             "limit": limit,
             "include_unknown": bool(include_unknown),
+            "availability": availability,
+            "hospital_soon_minutes": hospital_soon_minutes,
         },
         "source_bounties": len(bounties),
         "bounty_pages_scanned": bounty_pages,
         "unknown_estimates": unknown_count,
+        "status_checked": status_checked,
+        "status_counts": status_counts,
         "items": items,
-        "warnings": ff_errors[:5],
+        "warnings": (ff_errors + status_errors)[:8],
         "notes": [
             "Your battle stats come directly from Torn.",
             "Target battle stats are FFScouter estimates and can be stale or inaccurate.",
