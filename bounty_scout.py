@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from typing import Any
 
 import httpx
@@ -110,6 +111,68 @@ async def _ff_stats(client: httpx.AsyncClient, ids: list[int], key: str) -> tupl
         if start + BATCH_SIZE < len(unique):
             await asyncio.sleep(0.15)
     return results, errors
+
+
+async def _target_statuses(client: httpx.AsyncClient, ids: list[int]) -> tuple[dict[int, dict], list[str]]:
+    results: dict[int, dict] = {}
+    errors: list[str] = []
+    sem = asyncio.Semaphore(6)
+
+    async def one(player_id: int):
+        async with sem:
+            try:
+                data = await app_module._torn_get(
+                    client,
+                    "/user",
+                    {"id": int(player_id), "selections": "basic"},
+                    error_text="target status",
+                )
+                profile = data.get("profile") if isinstance(data, dict) and isinstance(data.get("profile"), dict) else {}
+                status = profile.get("status") if isinstance(profile.get("status"), dict) else {}
+                results[int(player_id)] = {
+                    "state": str(status.get("state") or "Unknown"),
+                    "description": str(status.get("description") or status.get("state") or "Unknown"),
+                    "until": int(status.get("until")) if status.get("until") is not None else None,
+                }
+            except Exception as exc:
+                errors.append(f"{player_id}: {exc}")
+
+    await asyncio.gather(*(one(pid) for pid in dict.fromkeys(int(x) for x in ids if int(x) > 0)))
+    return results, errors
+
+
+def _availability_info(status: dict | None, soon_minutes: int) -> dict[str, Any]:
+    now = int(time.time())
+    status = status or {}
+    state = str(status.get("state") or "Unknown").strip()
+    desc = str(status.get("description") or state or "Unknown").strip()
+    lowered = f"{state} {desc}".lower()
+    until = status.get("until")
+    try:
+        until = int(until) if until is not None else None
+    except (TypeError, ValueError):
+        until = None
+    seconds_left = max(0, until - now) if until else None
+
+    if any(x in lowered for x in ("travel", "abroad")):
+        kind = "traveling"
+    elif "hospital" in lowered:
+        kind = "hospital"
+    elif any(x in lowered for x in ("jail", "federal")):
+        kind = "jail"
+    elif state.lower() in ("okay", "idle") or "okay" in lowered:
+        kind = "ready"
+    else:
+        kind = "unknown"
+
+    return {
+        "kind": kind,
+        "ready": kind == "ready",
+        "hospital_soon": kind == "hospital" and seconds_left is not None and seconds_left <= int(soon_minutes) * 60,
+        "seconds_left": seconds_left,
+        "label": desc,
+        "until": until,
+    }
 
 
 def _human_number(value: int | float | None) -> str | None:
