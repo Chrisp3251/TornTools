@@ -101,6 +101,46 @@ def _bounty_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _group_bounties_by_target(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        target_id = int(row["target_id"])
+        current = grouped.get(target_id)
+        reward = int(row.get("reward") or 0)
+        quantity = max(1, int(row.get("quantity") or 1))
+        if current is None:
+            current = dict(row)
+            current["bounty_entries"] = 0
+            current["quantity"] = 0
+            current["total_reward"] = 0
+            current["highest_reward"] = 0
+            current["reasons"] = []
+            grouped[target_id] = current
+
+        current["bounty_entries"] += 1
+        current["quantity"] += quantity
+        current["total_reward"] += reward * quantity
+        current["highest_reward"] = max(int(current["highest_reward"]), reward)
+
+        reason = row.get("reason")
+        if reason and reason not in current["reasons"]:
+            current["reasons"].append(reason)
+
+        # Keep the best-paying listing as the representative row metadata.
+        if reward >= int(current.get("reward") or 0):
+            current["reward"] = reward
+            current["valid_until"] = row.get("valid_until")
+            current["is_anonymous"] = bool(row.get("is_anonymous"))
+            current["lister_id"] = row.get("lister_id")
+            current["lister_name"] = row.get("lister_name")
+
+    out = []
+    for row in grouped.values():
+        row["reason"] = " | ".join(row.get("reasons") or []) or None
+        out.append(row)
+    return out
+
+
 async def _ff_stats(client: httpx.AsyncClient, ids: list[int], key: str) -> tuple[dict[int, dict], list[str]]:
     results: dict[int, dict] = {}
     errors: list[str] = []
@@ -238,11 +278,12 @@ async def bounty_scout_search(
         if own_total <= 0:
             raise HTTPException(502, "Could not determine your total battle stats from Torn")
 
-        bounties = [
+        bounty_rows_filtered = [
             row for row in bounty_rows_all
             if row["reward"] >= int(min_reward)
             and (row["target_level"] is None or row["target_level"] <= int(max_level))
         ]
+        bounties = _group_bounties_by_target(bounty_rows_filtered)
 
         stat_map, ff_errors = await _ff_stats(client, [x["target_id"] for x in bounties], ff_key)
 
@@ -270,7 +311,7 @@ async def bounty_scout_search(
 
         reward_each = int(row["reward"])
         quantity = int(row["quantity"])
-        total_reward = reward_each * quantity
+        total_reward = int(row.get("total_reward") or (reward_each * quantity))
         value_score = (reward_each / max(float(estimate or own_total), 1.0)) * 1_000_000
 
         items.append({
@@ -349,7 +390,8 @@ async def bounty_scout_search(
             "availability": availability,
             "hospital_soon_minutes": hospital_soon_minutes,
         },
-        "source_bounties": len(bounties),
+        "source_bounties": len(bounty_rows_filtered),
+        "unique_targets": len(bounties),
         "bounty_pages_scanned": bounty_pages,
         "unknown_estimates": unknown_count,
         "status_checked": status_checked,
