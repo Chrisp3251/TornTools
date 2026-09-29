@@ -40,9 +40,10 @@ def _own_total_battlestats(data: dict[str, Any]) -> tuple[int, dict[str, int]]:
     return sum(stats.values()), stats
 
 
-async def _fetch_bounty_pages(client: httpx.AsyncClient, max_pages: int = 10) -> tuple[list[dict[str, Any]], int]:
+async def _fetch_bounty_pages(client: httpx.AsyncClient, max_pages: int = 25) -> tuple[list[dict[str, Any]], int, bool]:
     all_rows: list[dict[str, Any]] = []
     pages = 0
+    has_more = False
     for page in range(max_pages):
         offset = page * 100
         data = await app_module._torn_get(
@@ -57,9 +58,10 @@ async def _fetch_bounty_pages(client: httpx.AsyncClient, max_pages: int = 10) ->
 
         metadata = data.get("_metadata") if isinstance(data, dict) else None
         links = metadata.get("links") if isinstance(metadata, dict) and isinstance(metadata.get("links"), dict) else {}
-        if not links.get("next") or len(rows) < 100:
+        has_more = bool(links.get("next")) and len(rows) >= 100
+        if not has_more:
             break
-    return all_rows, pages
+    return all_rows, pages, has_more
 
 
 def _bounty_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -185,12 +187,15 @@ async def _target_statuses(client: httpx.AsyncClient, ids: list[int]) -> tuple[d
             try:
                 data = await app_module._torn_get(
                     client,
-                    "/user",
-                    {"id": int(player_id), "selections": "basic"},
+                    f"/user/{int(player_id)}/basic",
                     error_text="target status",
                 )
-                profile = data.get("profile") if isinstance(data, dict) and isinstance(data.get("profile"), dict) else {}
-                status = profile.get("status") if isinstance(profile.get("status"), dict) else {}
+                if isinstance(data, dict) and isinstance(data.get("status"), dict):
+                    status = data.get("status")
+                elif isinstance(data, dict) and isinstance(data.get("profile"), dict) and isinstance(data["profile"].get("status"), dict):
+                    status = data["profile"].get("status")
+                else:
+                    status = {}
                 results[int(player_id)] = {
                     "state": str(status.get("state") or "Unknown"),
                     "description": str(status.get("description") or status.get("state") or "Unknown"),
@@ -270,9 +275,9 @@ async def bounty_scout_search(
     async with httpx.AsyncClient(timeout=15.0) as client:
         own_data, bounty_page_result = await asyncio.gather(
             app_module._torn_get(client, "/user/battlestats", error_text="battle stats"),
-            _fetch_bounty_pages(client, max_pages=10),
+            _fetch_bounty_pages(client, max_pages=25),
         )
-        bounty_rows_all, bounty_pages = bounty_page_result
+        bounty_rows_all, bounty_pages, bounty_has_more = bounty_page_result
 
         own_total, own_stats = _own_total_battlestats(own_data)
         if own_total <= 0:
@@ -337,41 +342,57 @@ async def bounty_scout_search(
         reverse=True,
     )
 
+    stat_matched_count = len(items)
     status_counts = {"ready": 0, "hospital": 0, "traveling": 0, "jail": 0, "unknown": 0}
     status_checked = 0
     status_errors = []
 
+    status_budget = 70
+    status_candidates_considered = 0
     if availability != "all":
-        # Check availability BEFORE applying the result limit. Previously we
-        # limited to the top N by reward first, which could hide ready players
-        # if that top slice happened to be hospitalized/traveling.
-        candidates = items[:75]
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            status_map, status_errors = await _target_statuses(
-                client, [x["target_id"] for x in candidates]
-            )
+        # Walk the stat-matched pool in reward order until enough visible results
+        # are found or the safe per-scan Torn status-call budget is exhausted.
+        # This avoids silently dropping ready players just because they were
+        # outside a fixed top-75 slice.
         filtered = []
-        for item in candidates:
-            info = _availability_info(status_map.get(item["target_id"]), hospital_soon_minutes)
-            kind = info["kind"] if info["kind"] in status_counts else "unknown"
-            status_counts[kind] += 1
-            status_checked += 1
-            item["status_kind"] = kind
-            item["status"] = info["label"]
-            item["status_until"] = info["until"]
-            item["status_seconds_left"] = info["seconds_left"]
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            cursor = 0
+            batch_size = 10
+            while cursor < len(items) and status_checked < status_budget and len(filtered) < int(limit):
+                remaining_budget = status_budget - status_checked
+                batch = items[cursor:cursor + min(batch_size, remaining_budget)]
+                if not batch:
+                    break
+                cursor += len(batch)
+                status_candidates_considered += len(batch)
+                status_map, errs = await _target_statuses(
+                    client, [x["target_id"] for x in batch]
+                )
+                status_errors.extend(errs)
 
-            keep = False
-            if availability == "ready":
-                keep = info["ready"]
-            elif availability == "hospital_soon":
-                keep = info["hospital_soon"]
-            else:
-                keep = info["ready"] or info["hospital_soon"]
-            if keep:
-                filtered.append(item)
+                for item in batch:
+                    info = _availability_info(status_map.get(item["target_id"]), hospital_soon_minutes)
+                    kind = info["kind"] if info["kind"] in status_counts else "unknown"
+                    status_counts[kind] += 1
+                    status_checked += 1
+                    item["status_kind"] = kind
+                    item["status"] = info["label"]
+                    item["status_until"] = info["until"]
+                    item["status_seconds_left"] = info["seconds_left"]
+
+                    if availability == "ready":
+                        keep = info["ready"]
+                    elif availability == "hospital_soon":
+                        keep = info["hospital_soon"]
+                    else:
+                        keep = info["ready"] or info["hospital_soon"]
+                    if keep:
+                        filtered.append(item)
+                        if len(filtered) >= int(limit):
+                            break
         items = filtered[: int(limit)]
     else:
+        status_candidates_considered = min(len(items), int(limit))
         items = items[: int(limit)]
 
     return {
@@ -390,10 +411,15 @@ async def bounty_scout_search(
             "availability": availability,
             "hospital_soon_minutes": hospital_soon_minutes,
         },
+        "board_rows_scanned": len(bounty_rows_all),
         "source_bounties": len(bounty_rows_filtered),
         "unique_targets": len(bounties),
         "bounty_pages_scanned": bounty_pages,
+        "bounty_board_truncated": bool(bounty_has_more),
         "unknown_estimates": unknown_count,
+        "stat_matched_targets": stat_matched_count,
+        "status_candidates_considered": status_candidates_considered,
+        "status_budget": status_budget,
         "status_checked": status_checked,
         "status_counts": status_counts,
         "items": items,
