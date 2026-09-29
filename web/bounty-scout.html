@@ -122,7 +122,7 @@ async function scanBounties(){
     if(!r.ok) throw new Error(d.detail||JSON.stringify(d));
     document.getElementById('yourStats').textContent='Your BS: '+(d.own_total_human||fmtNum(d.own_total_battlestats));
     document.getElementById('count').textContent=d.items.length+' targets';
-    document.getElementById('summary').textContent='Scanned '+d.source_bounties+' bounty rows · '+d.unknown_estimates+' without estimates';
+    document.getElementById('summary').textContent='Scanned '+d.source_bounties+' qualifying bounty rows across '+(d.bounty_pages_scanned||1)+' page(s) · '+d.unknown_estimates+' without estimates';
     document.getElementById('status').textContent='Updated';
     const body=document.getElementById('rows');
     if(!d.items.length){
