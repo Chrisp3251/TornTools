@@ -9,6 +9,7 @@ echo Travel Intelligence: http://127.0.0.1:8765/static/travel-intelligence.html
 echo Bazaar Watch: http://127.0.0.1:8765/static/bazaar-watch.html
 echo Mug Scout: http://127.0.0.1:8765/static/mug-scout.html
 echo Mug Results: http://127.0.0.1:8765/static/mug-results.html
+echo Bounty Scout: http://127.0.0.1:8765/static/bounty-scout.html
 echo Request Broker: http://127.0.0.1:8765/api/request-broker/status
 echo.
 echo Clearing any stale TornTools listener on port 8765...
