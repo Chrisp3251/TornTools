@@ -25,7 +25,8 @@ _OWN_STATS_CACHE_TTL = 300
 _STATUS_READY_TTL = 60
 _STATUS_TRANSIENT_TTL = 120
 _STATUS_UNKNOWN_TTL = 45
-_STATUS_BUDGET_PER_SCAN = 20
+_STATUS_BUDGET_PER_SCAN = 40
+_STATUS_TARGET_RESULTS = 40
 _bounty_cache: dict[str, Any] = {"at": 0.0, "rows": [], "pages": 0, "has_more": False}
 _own_stats_cache: dict[str, Any] = {"at": 0.0, "data": None}
 _status_cache: dict[int, tuple[float, dict[str, Any]]] = {}
@@ -429,24 +430,65 @@ async def bounty_scout_search(
     status_errors: list[str] = []
     status_budget = _STATUS_BUDGET_PER_SCAN
 
-    # Status is enrichment, never a gate. Return every stat-matched bounty up
-    # to the requested display limit even when we do not have a fresh Torn
-    # status for that target yet.
+    # Walk deeper through the candidate pool until we have a useful number of
+    # actionable targets or hit the hard Torn status-request ceiling. Cached
+    # statuses do not consume the fresh-request budget, so known travel/jail/
+    # long-hospital targets are skipped cheaply on later scans.
     visible_items = items[: int(limit)]
+    status_freshly_requested = 0
+    cursor = 0
+    batch_size = 10
 
-    # Spend this scan's small Torn request budget on targets whose status is not
-    # currently cached. Repeated scans therefore walk forward through the
-    # result set instead of repeatedly querying the same top players.
-    status_refresh_ids = [
-        int(item["target_id"])
-        for item in visible_items
-        if _cached_status(int(item["target_id"])) is None
-    ][:status_budget]
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        while cursor < len(visible_items):
+            batch = visible_items[cursor:cursor + batch_size]
+            if not batch:
+                break
 
-    status_freshly_requested = len(status_refresh_ids)
-    if status_refresh_ids:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            _, status_errors = await _target_statuses(client, status_refresh_ids)
+            uncached_ids = [
+                int(item["target_id"])
+                for item in batch
+                if _cached_status(int(item["target_id"])) is None
+            ]
+
+            remaining_budget = status_budget - status_freshly_requested
+            if remaining_budget <= 0 and uncached_ids:
+                break
+
+            if uncached_ids and remaining_budget > 0:
+                fetch_ids = uncached_ids[:remaining_budget]
+                _, errs = await _target_statuses(client, fetch_ids)
+                status_errors.extend(errs)
+                status_freshly_requested += len(fetch_ids)
+
+            cursor += len(batch)
+
+            # Count currently actionable targets across everything examined so
+            # far. Stop early only when we have enough useful results.
+            actionable_now = 0
+            for probe in visible_items[:cursor]:
+                raw_status = _cached_status(int(probe["target_id"]))
+                if raw_status is None:
+                    continue
+                info = _availability_info(raw_status, hospital_soon_minutes)
+                if availability == "all":
+                    actionable_now += 1
+                elif availability == "ready":
+                    actionable_now += 1 if info["ready"] else 0
+                elif availability == "hospital_soon":
+                    actionable_now += 1 if info["hospital_soon"] else 0
+                else:
+                    actionable_now += 1 if (info["ready"] or info["hospital_soon"]) else 0
+
+            if actionable_now >= min(int(limit), _STATUS_TARGET_RESULTS):
+                break
+
+            if status_freshly_requested >= status_budget:
+                # We can continue only through already-cached batches; stop once
+                # the next unseen batch would require more Torn calls.
+                next_batch = visible_items[cursor:cursor + batch_size]
+                if any(_cached_status(int(item["target_id"])) is None for item in next_batch):
+                    break
 
     status_known = 0
     for item in visible_items:
@@ -550,6 +592,7 @@ async def bounty_scout_search(
         "stat_matched_targets": stat_matched_count,
         "status_candidates_considered": status_candidates_considered,
         "status_budget": status_budget,
+        "status_target_results": _STATUS_TARGET_RESULTS,
         "status_freshly_requested": status_freshly_requested,
         "status_checked": status_checked,
         "status_pending": status_counts["pending"],
