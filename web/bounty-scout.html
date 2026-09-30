@@ -13,12 +13,26 @@
     .grid input,.grid select{background:#0d1219;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:9px 10px}
     .good{color:var(--good);font-weight:800}.warn{color:var(--warn);font-weight:800}.bad{color:var(--bad);font-weight:800}
     .mini{font-size:11px;color:var(--muted)}
-    .bounty-table{width:100%;font-size:12px}
-    .bounty-table th,.bounty-table td{padding:8px 6px;vertical-align:top}
+    .bounty-table{width:100%;font-size:12px;table-layout:fixed}
+    .bounty-table th,.bounty-table td{padding:8px 7px;vertical-align:top;overflow-wrap:anywhere}
+    .bounty-table th:nth-child(1){width:24%}
+    .bounty-table th:nth-child(2){width:16%}
+    .bounty-table th:nth-child(3){width:18%}
+    .bounty-table th:nth-child(4){width:14%}
+    .bounty-table th:nth-child(5){width:14%}
+    .bounty-table th:nth-child(6){width:14%}
     .actions{display:flex;gap:5px;flex-wrap:wrap}
-    .actions a{display:inline-block;padding:5px 8px;border-radius:7px;border:1px solid var(--line);text-decoration:none;color:var(--text);font-size:10px}
-    @media(max-width:1050px){.grid{grid-template-columns:repeat(3,1fr)}}
-    @media(max-width:700px){.grid{grid-template-columns:1fr 1fr}.bounty-table{min-width:900px}.table-wrap{overflow-x:auto}}
+    .actions a{display:inline-block;padding:5px 7px;border-radius:7px;border:1px solid var(--line);text-decoration:none;color:var(--text);font-size:10px}
+    .interest{display:inline-block;padding:3px 7px;border-radius:999px;font-size:10px;font-weight:900;letter-spacing:.03em;border:1px solid var(--line)}
+    .interest.hot{color:var(--good);border-color:var(--good)}
+    .interest.watch{color:var(--warn);border-color:var(--warn)}
+    .interest.normal{color:var(--muted)}
+    .row-hot{box-shadow:inset 3px 0 0 var(--good)}
+    .row-watch{box-shadow:inset 3px 0 0 var(--warn)}
+    .reason-inline{margin-top:4px;line-height:1.25}
+    .compact-stack{display:grid;gap:2px}
+    @media(max-width:1050px){.grid{grid-template-columns:repeat(3,1fr)}.bounty-table{font-size:11px}}
+    @media(max-width:700px){.grid{grid-template-columns:1fr 1fr}.bounty-table{font-size:10px}.bounty-table th,.bounty-table td{padding:6px 4px}.actions a{padding:4px 5px}}
   </style>
 </head>
 <body>
@@ -82,9 +96,9 @@
     <div class="table-wrap">
       <table class="research-table bounty-table">
         <thead><tr>
-          <th>Target</th><th>Level</th><th>Top bounty</th><th>Bounties</th><th>Total</th><th>Est. BS</th><th>Ratio</th><th>Fair Fight</th><th>Reason</th><th>Status</th><th>Actions</th>
+          <th>Target / Interest</th><th>Bounty</th><th>Stats</th><th>Status</th><th>Meta</th><th>Actions</th>
         </tr></thead>
-        <tbody id="rows"><tr><td colspan="11" class="muted">Run a scan to load bounty targets.</td></tr></tbody>
+        <tbody id="rows"><tr><td colspan="6" class="muted">Run a scan to load bounty targets.</td></tr></tbody>
       </table>
     </div>
     <div class="research-note" style="margin-top:12px"><strong>Important:</strong> target battle stats are FFScouter estimates, not exact Torn stats. A lower total does not guarantee a win because distribution, merits, gear, passives, temps, and current buffs matter.</div>
@@ -101,6 +115,23 @@ function ratioClass(pct){
   if(pct<=50) return 'good';
   if(pct<=75) return 'warn';
   return 'bad';
+}
+
+function interestFor(x){
+  const reward=Number(x.highest_reward||x.reward||0);
+  const ratio=x.bs_ratio_pct==null?null:Number(x.bs_ratio_pct);
+  const total=Number(x.total_reward||x.reward||0);
+  const ff=x.fair_fight==null?0:Number(x.fair_fight);
+  const status=x.status_kind||'pending';
+  let score=0;
+  if(reward>=1000000) score+=4; else if(reward>=500000) score+=3; else if(reward>=250000) score+=2; else if(reward>=100000) score+=1;
+  if(total>=2000000) score+=2; else if(total>=750000) score+=1;
+  if(ratio!=null){ if(ratio<=35) score+=4; else if(ratio<=50) score+=3; else if(ratio<=65) score+=2; else if(ratio<=75) score+=1; }
+  if(ff>=2) score+=1;
+  if(status==='ready') score+=3; else if(status==='hospital') score+=1; else if(status==='traveling'||status==='jail') score-=2;
+  if(score>=9) return {label:'HIGH INTEREST',cls:'hot',row:'row-hot',score};
+  if(score>=6) return {label:'WATCH',cls:'watch',row:'row-watch',score};
+  return {label:'STANDARD',cls:'normal',row:'',score};
 }
 
 async function scanBounties(){
@@ -130,23 +161,27 @@ async function scanBounties(){
     document.getElementById('status').textContent='Updated';
     const body=document.getElementById('rows');
     if(!d.items.length){
-      body.innerHTML='<tr><td colspan="11" class="muted">No bounty targets matched these filters.</td></tr>';
+      body.innerHTML='<tr><td colspan="6" class="muted">No bounty targets matched these filters.</td></tr>';
     }else{
-      body.innerHTML=d.items.map(x=>`
-        <tr>
-          <td><strong>${esc(x.target_name)}</strong><div class="mini">[${x.target_id}]</div></td>
-          <td>${x.target_level??'—'}</td>
-          <td><strong>${fmtMoney(x.highest_reward||x.reward)}</strong></td>
-          <td>${x.bounty_entries||1}</td>
-          <td><strong>${fmtMoney(x.total_reward||x.reward)}</strong><div class="mini">${x.quantity||1} payout${(x.quantity||1)===1?'':'s'}</div></td>
-          <td><strong>${esc(x.bs_estimate_human||fmtNum(x.bs_estimate))}</strong><div class="mini">${esc(x.ff_source||'unknown source')}</div></td>
-          <td class="${ratioClass(x.bs_ratio_pct)}">${x.bs_ratio_pct==null?'Unknown':x.bs_ratio_pct+'%'}</td>
-          <td>${x.fair_fight??'—'}</td>
-          <td>${esc(x.reason||'—')}</td>
+      body.innerHTML=d.items.map(x=>{
+        const interest=interestFor(x);
+        const reason=x.reason?'<div class="mini reason-inline">'+esc(x.reason)+'</div>':'';
+        return `
+        <tr class="${interest.row}">
+          <td>
+            <div class="compact-stack">
+              <div><strong>${esc(x.target_name)}</strong> <span class="mini">[${x.target_id}]</span></div>
+              <div><span class="interest ${interest.cls}" title="Scout interest score ${interest.score}">${interest.label}</span></div>
+              ${reason}
+            </div>
+          </td>
+          <td><div class="compact-stack"><strong>${fmtMoney(x.highest_reward||x.reward)}</strong><span class="mini">${x.bounty_entries||1} listing${(x.bounty_entries||1)===1?'':'s'} · ${x.quantity||1} payout${(x.quantity||1)===1?'':'s'}</span><span class="mini">Total ${fmtMoney(x.total_reward||x.reward)}</span></div></td>
+          <td><div class="compact-stack"><strong>${esc(x.bs_estimate_human||fmtNum(x.bs_estimate))}</strong><span class="${ratioClass(x.bs_ratio_pct)}">${x.bs_ratio_pct==null?'Unknown ratio':x.bs_ratio_pct+'% of yours'}</span><span class="mini">FF ${x.fair_fight??'—'} · ${esc(x.ff_source||'unknown source')}</span></div></td>
           <td class="status-cell" data-player-id="${x.target_id}"><span class="mini">Checking…</span></td>
+          <td><div class="compact-stack"><span>Lvl ${x.target_level??'—'}</span><span class="mini">${x.is_anonymous?'Anonymous lister':'Listed bounty'}</span></div></td>
           <td><div class="actions"><a href="${x.profile_url}" target="_blank" rel="noopener">Profile</a><a href="${x.attack_url}" target="_blank" rel="noopener">Attack</a></div></td>
-        </tr>`).join('');
-    }
+        </tr>`;
+      }).join('');    }
     // Statuses are already resolved by the main search endpoint. Rendering them
     // here avoids a second Torn API call for every returned target.
     document.querySelectorAll('.status-cell[data-player-id]').forEach(el=>{
