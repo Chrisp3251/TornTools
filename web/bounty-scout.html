@@ -147,44 +147,23 @@ async function scanBounties(){
           <td><div class="actions"><a href="${x.profile_url}" target="_blank" rel="noopener">Profile</a><a href="${x.attack_url}" target="_blank" rel="noopener">Attack</a></div></td>
         </tr>`).join('');
     }
-    const statusCells=[...document.querySelectorAll('.status-cell[data-player-id]')];
-    if(statusCells.length){
-      const ids=statusCells.map(el=>el.dataset.playerId).join(',');
-      try{
-        const sr=await fetch('/api/bounty-scout/statuses?ids='+encodeURIComponent(ids));
-        const sd=await sr.json();
-        const sm=new Map((sd.items||[]).map(s=>[String(s.player_id),s]));
-        for(const el of statusCells){
-          const s=sm.get(el.dataset.playerId);
-          if(!s){el.textContent='Unknown';el.dataset.kind='unknown';continue;}
-          el.dataset.kind=s.kind||'unknown';
-          el.dataset.secondsLeft=s.seconds_left==null?'':String(s.seconds_left);
-          if(s.kind==='ready') el.innerHTML='<span class="good">READY</span>';
-          else if(s.kind==='hospital'){
-            const mins=s.seconds_left==null?'?':Math.ceil(Number(s.seconds_left)/60);
-            el.innerHTML='<span class="warn">HOSPITAL</span><div class="mini">~'+mins+' min left</div>';
-          } else if(s.kind==='traveling') el.innerHTML='<span class="bad">TRAVELING</span>';
-          else if(s.kind==='jail') el.innerHTML='<span class="bad">JAILED</span>';
-          else el.textContent=s.description||s.state||'Unknown';
-        }
-      }catch(e){}
-    }
-
-    const mode=document.getElementById('availabilityMode')?.value||'ready_or_soon';
-    const soon=Number(document.getElementById('hospitalSoonMinutes')?.value||30)*60;
-    let visible=0;
-    document.querySelectorAll('#rows tr').forEach(row=>{
-      const cell=row.querySelector('.status-cell');
-      if(!cell)return;
-      const kind=cell.dataset.kind||'unknown';
-      const left=Number(cell.dataset.secondsLeft||0);
-      let show=true;
-      if(mode==='ready') show=kind==='ready';
-      else if(mode==='ready_or_soon') show=kind==='ready'||(kind==='hospital'&&left>0&&left<=soon);
-      row.style.display=show?'':'none';
-      if(show) visible++;
+    // Statuses are already resolved by the main search endpoint. Rendering them
+    // here avoids a second Torn API call for every returned target.
+    document.querySelectorAll('.status-cell[data-player-id]').forEach(el=>{
+      const row=el.closest('tr');
+      const item=d.items.find(x=>String(x.target_id)===el.dataset.playerId);
+      const kind=item?.status_kind||'unknown';
+      const left=item?.status_seconds_left;
+      el.dataset.kind=kind;
+      el.dataset.secondsLeft=left==null?'':String(left);
+      if(kind==='ready') el.innerHTML='<span class="good">READY</span>';
+      else if(kind==='hospital'){
+        const mins=left==null?'?':Math.ceil(Number(left)/60);
+        el.innerHTML='<span class="warn">HOSPITAL</span><div class="mini">~'+mins+' min left</div>';
+      } else if(kind==='traveling') el.innerHTML='<span class="bad">TRAVELING</span>';
+      else if(kind==='jail') el.innerHTML='<span class="bad">JAILED</span>';
+      else el.textContent=item?.status||'Unknown';
     });
-    document.getElementById('count').textContent=visible+' targets';
 
     if(d.warnings?.length){
       err.textContent='FFScouter warning: '+d.warnings.join(' | ');
@@ -197,8 +176,8 @@ async function scanBounties(){
     btn.disabled=false; btn.textContent='Scan Bounties';
   }
 }
-document.getElementById('availabilityMode')?.addEventListener('change',scanBounties);
-document.getElementById('hospitalSoonMinutes')?.addEventListener('change',scanBounties);
+// Filter changes are applied on the next Scan Bounties click instead of
+// automatically firing another full Torn API scan.
 </script>
 </body>
 </html>
