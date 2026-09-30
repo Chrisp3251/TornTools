@@ -214,6 +214,16 @@ async def _ff_stats(client: httpx.AsyncClient, ids: list[int], key: str) -> tupl
     return results, errors
 
 
+def _cached_status(player_id: int) -> dict[str, Any] | None:
+    cached = _status_cache.get(int(player_id))
+    if not cached:
+        return None
+    expires_at, parsed = cached
+    if time.time() >= float(expires_at):
+        return None
+    return dict(parsed)
+
+
 def _status_cache_ttl(parsed: dict[str, Any]) -> int:
     state = str(parsed.get("state") or "").lower()
     desc = str(parsed.get("description") or "").lower()
@@ -330,7 +340,7 @@ async def bounty_scout_search(
     max_ratio: float = Query(1.00, ge=0.05, le=10.0),
     min_reward: int = Query(0, ge=0),
     max_level: int = Query(100, ge=1, le=100),
-    limit: int = Query(50, ge=1, le=100),
+    limit: int = Query(250, ge=1, le=1000),
     include_unknown: int = Query(0, ge=0, le=1),
     availability: str = Query("ready_or_soon"),
     hospital_soon_minutes: int = Query(30, ge=1, le=240),
@@ -415,56 +425,60 @@ async def bounty_scout_search(
     )
 
     stat_matched_count = len(items)
-    status_counts = {"ready": 0, "hospital": 0, "traveling": 0, "jail": 0, "unknown": 0}
-    status_checked = 0
-    status_errors = []
-
+    status_counts = {"ready": 0, "hospital": 0, "traveling": 0, "jail": 0, "unknown": 0, "pending": 0}
+    status_errors: list[str] = []
     status_budget = _STATUS_BUDGET_PER_SCAN
-    status_candidates_considered = 0
-    if availability != "all":
-        # Walk the stat-matched pool in deterministic reward order. A modest
-        # per-scan ceiling plus the shared status cache prevents one click from
-        # consuming a large fraction of Torn's API allowance.
-        filtered = []
+
+    # Status is enrichment, never a gate. Return every stat-matched bounty up
+    # to the requested display limit even when we do not have a fresh Torn
+    # status for that target yet.
+    visible_items = items[: int(limit)]
+
+    # Spend this scan's small Torn request budget on targets whose status is not
+    # currently cached. Repeated scans therefore walk forward through the
+    # result set instead of repeatedly querying the same top players.
+    status_refresh_ids = [
+        int(item["target_id"])
+        for item in visible_items
+        if _cached_status(int(item["target_id"])) is None
+    ][:status_budget]
+
+    status_freshly_requested = len(status_refresh_ids)
+    if status_refresh_ids:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            cursor = 0
-            batch_size = 10
-            while cursor < len(items) and status_checked < status_budget and len(filtered) < int(limit):
-                remaining_budget = status_budget - status_checked
-                batch = items[cursor:cursor + min(batch_size, remaining_budget)]
-                if not batch:
-                    break
-                cursor += len(batch)
-                status_candidates_considered += len(batch)
-                status_map, errs = await _target_statuses(
-                    client, [x["target_id"] for x in batch]
-                )
-                status_errors.extend(errs)
+            _, status_errors = await _target_statuses(client, status_refresh_ids)
 
-                for item in batch:
-                    info = _availability_info(status_map.get(item["target_id"]), hospital_soon_minutes)
-                    kind = info["kind"] if info["kind"] in status_counts else "unknown"
-                    status_counts[kind] += 1
-                    status_checked += 1
-                    item["status_kind"] = kind
-                    item["status"] = info["label"]
-                    item["status_until"] = info["until"]
-                    item["status_seconds_left"] = info["seconds_left"]
+    status_known = 0
+    for item in visible_items:
+        raw_status = _cached_status(int(item["target_id"]))
+        if raw_status is None:
+            item["status_kind"] = "pending"
+            item["status"] = "Status pending"
+            item["status_until"] = None
+            item["status_seconds_left"] = None
+            item["status_checked"] = False
+            status_counts["pending"] += 1
+            continue
 
-                    if availability == "ready":
-                        keep = info["ready"]
-                    elif availability == "hospital_soon":
-                        keep = info["hospital_soon"]
-                    else:
-                        keep = info["ready"] or info["hospital_soon"]
-                    if keep:
-                        filtered.append(item)
-                        if len(filtered) >= int(limit):
-                            break
-        items = filtered[: int(limit)]
-    else:
-        status_candidates_considered = min(len(items), int(limit))
-        items = items[: int(limit)]
+        info = _availability_info(raw_status, hospital_soon_minutes)
+        kind = info["kind"] if info["kind"] in status_counts else "unknown"
+        item["status_kind"] = kind
+        item["status"] = info["label"]
+        item["status_until"] = info["until"]
+        item["status_seconds_left"] = info["seconds_left"]
+        item["status_checked"] = True
+        item["matches_requested_availability"] = (
+            True if availability == "all"
+            else info["ready"] if availability == "ready"
+            else info["hospital_soon"] if availability == "hospital_soon"
+            else (info["ready"] or info["hospital_soon"])
+        )
+        status_counts[kind] += 1
+        status_known += 1
+
+    items = visible_items
+    status_candidates_considered = len(visible_items)
+    status_checked = status_known
 
     return {
         "ok": True,
@@ -491,13 +505,18 @@ async def bounty_scout_search(
         "stat_matched_targets": stat_matched_count,
         "status_candidates_considered": status_candidates_considered,
         "status_budget": status_budget,
+        "status_freshly_requested": status_freshly_requested,
         "status_checked": status_checked,
+        "status_pending": status_counts["pending"],
+        "status_coverage_pct": round((status_checked / len(items) * 100.0) if items else 100.0, 1),
         "status_counts": status_counts,
         "items": items,
         "warnings": (ff_errors + status_errors)[:8],
         "notes": [
             "Your battle stats come directly from Torn.",
             "Target battle stats are FFScouter estimates and can be stale or inaccurate.",
+            "All matching bounty targets are returned without requiring a Torn status lookup first.",
+            "Live status is progressively enriched from a bounded cache-backed request budget; pending status never hides a target.",
             "A target being below your total stats does not guarantee a win; stat distribution, merits, weapons, armor, temporary effects, and passives matter.",
         ],
     }
