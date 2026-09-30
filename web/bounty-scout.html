@@ -13,15 +13,16 @@
     .grid input,.grid select{background:#0d1219;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:9px 10px}
     .good{color:var(--good);font-weight:800}.warn{color:var(--warn);font-weight:800}.bad{color:var(--bad);font-weight:800}
     .mini{font-size:11px;color:var(--muted)}
-    .bounty-table{width:100%;font-size:12px;table-layout:fixed}
-    .bounty-table th,.bounty-table td{padding:8px 7px;vertical-align:top;overflow-wrap:anywhere}
+    .table-wrap{width:100%;max-width:100%;overflow-x:hidden}
+    .bounty-table{width:100%;max-width:100%;font-size:12px;table-layout:fixed;border-collapse:collapse}
+    .bounty-table th,.bounty-table td{padding:8px 7px;vertical-align:top;overflow-wrap:anywhere;word-break:break-word;white-space:normal}
     .bounty-table th:nth-child(1){width:24%}
     .bounty-table th:nth-child(2){width:16%}
     .bounty-table th:nth-child(3){width:18%}
     .bounty-table th:nth-child(4){width:14%}
     .bounty-table th:nth-child(5){width:14%}
     .bounty-table th:nth-child(6){width:14%}
-    .actions{display:flex;gap:5px;flex-wrap:wrap}
+    .actions{display:flex;gap:5px;flex-wrap:wrap;max-width:100%}
     .actions a{display:inline-block;padding:5px 7px;border-radius:7px;border:1px solid var(--line);text-decoration:none;color:var(--text);font-size:10px}
     .interest{display:inline-block;padding:3px 7px;border-radius:999px;font-size:10px;font-weight:900;letter-spacing:.03em;border:1px solid var(--line)}
     .interest.hot{color:var(--good);border-color:var(--good)}
@@ -32,7 +33,19 @@
     .reason-inline{margin-top:4px;line-height:1.25}
     .compact-stack{display:grid;gap:2px}
     @media(max-width:1050px){.grid{grid-template-columns:repeat(3,1fr)}.bounty-table{font-size:11px}}
-    @media(max-width:700px){.grid{grid-template-columns:1fr 1fr}.bounty-table{font-size:10px}.bounty-table th,.bounty-table td{padding:6px 4px}.actions a{padding:4px 5px}}
+    @media(max-width:700px){
+      .grid{grid-template-columns:1fr 1fr}
+      .bounty-table{font-size:10px;table-layout:fixed}
+      .bounty-table th,.bounty-table td{padding:6px 4px}
+      .actions{display:grid;grid-template-columns:1fr}
+      .actions a{padding:4px 5px;text-align:center}
+      .bounty-table th:nth-child(1){width:26%}
+      .bounty-table th:nth-child(2){width:16%}
+      .bounty-table th:nth-child(3){width:18%}
+      .bounty-table th:nth-child(4){width:14%}
+      .bounty-table th:nth-child(5){width:12%}
+      .bounty-table th:nth-child(6){width:14%}
+    }
   </style>
 </head>
 <body>
