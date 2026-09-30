@@ -476,7 +476,52 @@ async def bounty_scout_search(
         status_counts[kind] += 1
         status_known += 1
 
-    items = visible_items
+    # Availability is once again a real filter for the main list. Pending
+    # candidates are kept out of the table until Torn status is known so the
+    # results stay useful instead of becoming a dump of travel/long-hospital
+    # targets. They are still counted in the response and progressively checked
+    # on later scans from the shared cache-backed budget.
+    if availability == "all":
+        filtered_items = visible_items
+    elif availability == "ready":
+        filtered_items = [
+            item for item in visible_items
+            if item.get("status_checked") and item.get("status_kind") == "ready"
+        ]
+    elif availability == "hospital_soon":
+        filtered_items = [
+            item for item in visible_items
+            if item.get("status_checked")
+            and item.get("status_kind") == "hospital"
+            and item.get("status_seconds_left") is not None
+            and int(item["status_seconds_left"]) <= int(hospital_soon_minutes) * 60
+        ]
+    else:
+        filtered_items = [
+            item for item in visible_items
+            if item.get("status_checked")
+            and (
+                item.get("status_kind") == "ready"
+                or (
+                    item.get("status_kind") == "hospital"
+                    and item.get("status_seconds_left") is not None
+                    and int(item["status_seconds_left"]) <= int(hospital_soon_minutes) * 60
+                )
+            )
+        ]
+
+    # Put confirmed ready targets first, then hospital-soon, preserving the
+    # existing reward/stat ordering within each group.
+    filtered_items.sort(
+        key=lambda item: (
+            1 if item.get("status_kind") == "ready" else 0,
+            int(item.get("highest_reward") or item.get("reward") or 0),
+            -float(item.get("bs_ratio") if item.get("bs_ratio") is not None else math.inf),
+        ),
+        reverse=True,
+    )
+
+    items = filtered_items
     status_candidates_considered = len(visible_items)
     status_checked = status_known
 
@@ -515,8 +560,8 @@ async def bounty_scout_search(
         "notes": [
             "Your battle stats come directly from Torn.",
             "Target battle stats are FFScouter estimates and can be stale or inaccurate.",
-            "All matching bounty targets are returned without requiring a Torn status lookup first.",
-            "Live status is progressively enriched from a bounded cache-backed request budget; pending status never hides a target.",
+            "The main list respects the selected availability filter.",
+            "Unchecked candidates are progressively verified from a bounded cache-backed request budget and are counted as pending until confirmed.",
             "A target being below your total stats does not guarantee a win; stat distribution, merits, weapons, armor, temporary effects, and passives matter.",
         ],
     }
