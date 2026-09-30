@@ -53,13 +53,13 @@
         <input id="maxLevel" type="number" min="1" max="100" step="1" value="100">
       </label>
       <label>Results
-        <input id="limit" type="number" min="1" max="100" step="1" value="50">
+        <input id="limit" type="number" min="1" max="1000" step="25" value="250">
       </label>
       <label>Unknown BS
         <select id="includeUnknown"><option value="0" selected>Hide</option><option value="1">Show</option></select>
       </label>
-      <label>Availability
-        <select id="availabilityMode"><option value="ready_or_soon" selected>Ready + hospital soon</option><option value="ready">Ready only</option><option value="all">Show all</option></select>
+      <label>Status preference
+        <select id="availabilityMode"><option value="all" selected>Show all results</option><option value="ready_or_soon">Flag ready + hospital soon</option><option value="ready">Flag ready only</option></select>
       </label>
       <label>Hospital soon ≤
         <select id="hospitalSoonMinutes"><option value="15">15 min</option><option value="30" selected>30 min</option><option value="60">60 min</option></select>
@@ -76,7 +76,7 @@
 
   <section class="panel">
     <div class="section-head">
-      <div><h2>Targets In Range</h2><p class="muted">Reward is the listed reward per bounty. Ratio compares estimated target BS to your current total BS.</p></div>
+      <div><h2>Targets In Range</h2><p class="muted">All stat-matched results are shown. Live Torn status is filled progressively from cache so status checks do not hide otherwise valid bounties.</p></div>
       <span id="count" class="pill">0 targets</span>
     </div>
     <div class="table-wrap">
@@ -126,7 +126,7 @@ async function scanBounties(){
     document.getElementById('count').textContent=d.items.length+' targets';
     const sc=d.status_counts||{};
     const trunc=d.bounty_board_truncated?' · BOARD STILL HAS MORE':'';
-    document.getElementById('summary').textContent='Board rows '+(d.board_rows_scanned||0)+' across '+(d.bounty_pages_scanned||1)+' page(s)'+trunc+' · '+d.source_bounties+' reward/level matches · '+(d.unique_targets||0)+' unique · '+(d.stat_matched_targets||0)+' stat matches · checked '+(d.status_checked||0)+' statuses · ready '+(sc.ready||0)+' · hosp '+(sc.hospital||0)+' · travel '+(sc.traveling||0)+' · jail '+(sc.jail||0)+' · unknown '+(sc.unknown||0);
+    document.getElementById('summary').textContent='Board rows '+(d.board_rows_scanned||0)+' across '+(d.bounty_pages_scanned||1)+' page(s)'+trunc+' · '+d.source_bounties+' reward/level matches · '+(d.unique_targets||0)+' unique · '+(d.stat_matched_targets||0)+' stat matches · showing '+d.items.length+' · status coverage '+(d.status_coverage_pct??0)+'% · fresh checks '+(d.status_freshly_requested||0)+' · pending '+(d.status_pending||0);
     document.getElementById('status').textContent='Updated';
     const body=document.getElementById('rows');
     if(!d.items.length){
@@ -152,7 +152,7 @@ async function scanBounties(){
     document.querySelectorAll('.status-cell[data-player-id]').forEach(el=>{
       const row=el.closest('tr');
       const item=d.items.find(x=>String(x.target_id)===el.dataset.playerId);
-      const kind=item?.status_kind||'unknown';
+      const kind=item?.status_kind||'pending';
       const left=item?.status_seconds_left;
       el.dataset.kind=kind;
       el.dataset.secondsLeft=left==null?'':String(left);
@@ -162,11 +162,12 @@ async function scanBounties(){
         el.innerHTML='<span class="warn">HOSPITAL</span><div class="mini">~'+mins+' min left</div>';
       } else if(kind==='traveling') el.innerHTML='<span class="bad">TRAVELING</span>';
       else if(kind==='jail') el.innerHTML='<span class="bad">JAILED</span>';
+      else if(kind==='pending') el.innerHTML='<span class="mini">PENDING</span>';
       else el.textContent=item?.status||'Unknown';
     });
 
     if(d.warnings?.length){
-      err.textContent='FFScouter warning: '+d.warnings.join(' | ');
+      err.textContent='Scout warning: '+d.warnings.join(' | ');
       err.style.display='block';
     }
   }catch(e){
