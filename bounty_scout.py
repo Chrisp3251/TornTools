@@ -20,12 +20,17 @@ BATCH_SIZE = 50
 # Torn API conservation. The bounty board changes often, but re-downloading up
 # to 25 pages on every button click is wasteful. Statuses are also briefly
 # cached so repeated scans do not re-query the same players immediately.
-_BOUNTY_CACHE_TTL = 45
+_BOUNTY_CACHE_TTL = 60
 _OWN_STATS_CACHE_TTL = 300
-_STATUS_CACHE_TTL = 30
+_STATUS_READY_TTL = 60
+_STATUS_TRANSIENT_TTL = 120
+_STATUS_UNKNOWN_TTL = 45
+_STATUS_BUDGET_PER_SCAN = 20
 _bounty_cache: dict[str, Any] = {"at": 0.0, "rows": [], "pages": 0, "has_more": False}
 _own_stats_cache: dict[str, Any] = {"at": 0.0, "data": None}
 _status_cache: dict[int, tuple[float, dict[str, Any]]] = {}
+_bounty_fetch_lock = asyncio.Lock()
+_status_inflight: dict[int, asyncio.Task] = {}
 
 
 def _num(value):
@@ -55,28 +60,35 @@ async def _fetch_bounty_pages(client: httpx.AsyncClient, max_pages: int = 25) ->
     if _bounty_cache["rows"] and now - float(_bounty_cache["at"]) < _BOUNTY_CACHE_TTL:
         return list(_bounty_cache["rows"]), int(_bounty_cache["pages"]), bool(_bounty_cache["has_more"])
 
-    all_rows: list[dict[str, Any]] = []
-    pages = 0
-    has_more = False
-    for page in range(max_pages):
-        offset = page * 100
-        data = await app_module._torn_get(
-            client,
-            "/torn/bounties",
-            {"limit": 100, "offset": offset},
-            error_text="bounties",
-        )
-        rows = _bounty_rows(data)
-        all_rows.extend(rows)
-        pages += 1
+    # Multiple browser clicks can overlap. Only one request is allowed to
+    # refresh the board; everyone else reuses that completed snapshot.
+    async with _bounty_fetch_lock:
+        now = time.time()
+        if _bounty_cache["rows"] and now - float(_bounty_cache["at"]) < _BOUNTY_CACHE_TTL:
+            return list(_bounty_cache["rows"]), int(_bounty_cache["pages"]), bool(_bounty_cache["has_more"])
 
-        metadata = data.get("_metadata") if isinstance(data, dict) else None
-        links = metadata.get("links") if isinstance(metadata, dict) and isinstance(metadata.get("links"), dict) else {}
-        has_more = bool(links.get("next")) and len(rows) >= 100
-        if not has_more:
-            break
-    _bounty_cache.update({"at": time.time(), "rows": list(all_rows), "pages": pages, "has_more": has_more})
-    return all_rows, pages, has_more
+        all_rows: list[dict[str, Any]] = []
+        pages = 0
+        has_more = False
+        for page in range(max_pages):
+            offset = page * 100
+            data = await app_module._torn_get(
+                client,
+                "/torn/bounties",
+                {"limit": 100, "offset": offset},
+                error_text="bounties",
+            )
+            rows = _bounty_rows(data)
+            all_rows.extend(rows)
+            pages += 1
+
+            metadata = data.get("_metadata") if isinstance(data, dict) else None
+            links = metadata.get("links") if isinstance(metadata, dict) and isinstance(metadata.get("links"), dict) else {}
+            has_more = bool(links.get("next")) and len(rows) >= 100
+            if not has_more:
+                break
+        _bounty_cache.update({"at": time.time(), "rows": list(all_rows), "pages": pages, "has_more": has_more})
+        return all_rows, pages, has_more
 
 
 async def _get_own_battlestats(client: httpx.AsyncClient) -> dict[str, Any]:
@@ -202,6 +214,17 @@ async def _ff_stats(client: httpx.AsyncClient, ids: list[int], key: str) -> tupl
     return results, errors
 
 
+def _status_cache_ttl(parsed: dict[str, Any]) -> int:
+    state = str(parsed.get("state") or "").lower()
+    desc = str(parsed.get("description") or "").lower()
+    lowered = f"{state} {desc}"
+    if "hospital" in lowered or "jail" in lowered or "federal" in lowered or "travel" in lowered or "abroad" in lowered:
+        return _STATUS_TRANSIENT_TTL
+    if state in ("okay", "idle") or "okay" in lowered:
+        return _STATUS_READY_TTL
+    return _STATUS_UNKNOWN_TTL
+
+
 async def _target_statuses(client: httpx.AsyncClient, ids: list[int]) -> tuple[dict[int, dict], list[str]]:
     results: dict[int, dict] = {}
     errors: list[str] = []
@@ -212,32 +235,44 @@ async def _target_statuses(client: httpx.AsyncClient, ids: list[int]) -> tuple[d
 
     for player_id in unique_ids:
         cached = _status_cache.get(player_id)
-        if cached and now - cached[0] < _STATUS_CACHE_TTL:
+        if cached and now < cached[0]:
             results[player_id] = dict(cached[1])
         else:
             to_fetch.append(player_id)
 
+    async def fetch_one(player_id: int):
+        try:
+            data = await app_module._torn_get(
+                client,
+                f"/user/{int(player_id)}/basic",
+                error_text="target status",
+            )
+            if isinstance(data, dict) and isinstance(data.get("status"), dict):
+                status = data.get("status")
+            elif isinstance(data, dict) and isinstance(data.get("profile"), dict) and isinstance(data["profile"].get("status"), dict):
+                status = data["profile"].get("status")
+            else:
+                status = {}
+            parsed = {
+                "state": str(status.get("state") or "Unknown"),
+                "description": str(status.get("description") or status.get("state") or "Unknown"),
+                "until": int(status.get("until")) if status.get("until") is not None else None,
+            }
+            expires_at = time.time() + _status_cache_ttl(parsed)
+            _status_cache[int(player_id)] = (expires_at, dict(parsed))
+            return parsed
+        finally:
+            _status_inflight.pop(int(player_id), None)
+
     async def one(player_id: int):
         async with sem:
             try:
-                data = await app_module._torn_get(
-                    client,
-                    f"/user/{int(player_id)}/basic",
-                    error_text="target status",
-                )
-                if isinstance(data, dict) and isinstance(data.get("status"), dict):
-                    status = data.get("status")
-                elif isinstance(data, dict) and isinstance(data.get("profile"), dict) and isinstance(data["profile"].get("status"), dict):
-                    status = data["profile"].get("status")
-                else:
-                    status = {}
-                parsed = {
-                    "state": str(status.get("state") or "Unknown"),
-                    "description": str(status.get("description") or status.get("state") or "Unknown"),
-                    "until": int(status.get("until")) if status.get("until") is not None else None,
-                }
-                results[int(player_id)] = parsed
-                _status_cache[int(player_id)] = (time.time(), dict(parsed))
+                task = _status_inflight.get(int(player_id))
+                if task is None or task.done():
+                    task = asyncio.create_task(fetch_one(int(player_id)))
+                    _status_inflight[int(player_id)] = task
+                parsed = await task
+                results[int(player_id)] = dict(parsed)
             except Exception as exc:
                 errors.append(f"{player_id}: {exc}")
 
@@ -384,13 +419,12 @@ async def bounty_scout_search(
     status_checked = 0
     status_errors = []
 
-    status_budget = 50
+    status_budget = _STATUS_BUDGET_PER_SCAN
     status_candidates_considered = 0
     if availability != "all":
-        # Walk the stat-matched pool in reward order until enough visible results
-        # are found or the safe per-scan Torn status-call budget is exhausted.
-        # This avoids silently dropping ready players just because they were
-        # outside a fixed top-75 slice.
+        # Walk the stat-matched pool in deterministic reward order. A modest
+        # per-scan ceiling plus the shared status cache prevents one click from
+        # consuming a large fraction of Torn's API allowance.
         filtered = []
         async with httpx.AsyncClient(timeout=15.0) as client:
             cursor = 0
