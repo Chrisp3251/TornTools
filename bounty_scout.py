@@ -340,7 +340,7 @@ async def bounty_scout_search(
     max_ratio: float = Query(1.00, ge=0.05, le=10.0),
     min_reward: int = Query(0, ge=0),
     max_level: int = Query(100, ge=1, le=100),
-    limit: int = Query(250, ge=1, le=1000),
+    limit: int = Query(2500, ge=1, le=2500),
     include_unknown: int = Query(0, ge=0, le=1),
     availability: str = Query("ready_or_soon"),
     hospital_soon_minutes: int = Query(30, ge=1, le=240),
