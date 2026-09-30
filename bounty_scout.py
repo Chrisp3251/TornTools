@@ -17,6 +17,16 @@ app = travel_state_runtime.app
 FFSCOUTER_BASE = mug_scout.FFSCOUTER_BASE
 BATCH_SIZE = 50
 
+# Torn API conservation. The bounty board changes often, but re-downloading up
+# to 25 pages on every button click is wasteful. Statuses are also briefly
+# cached so repeated scans do not re-query the same players immediately.
+_BOUNTY_CACHE_TTL = 45
+_OWN_STATS_CACHE_TTL = 300
+_STATUS_CACHE_TTL = 30
+_bounty_cache: dict[str, Any] = {"at": 0.0, "rows": [], "pages": 0, "has_more": False}
+_own_stats_cache: dict[str, Any] = {"at": 0.0, "data": None}
+_status_cache: dict[int, tuple[float, dict[str, Any]]] = {}
+
 
 def _num(value):
     try:
@@ -41,6 +51,10 @@ def _own_total_battlestats(data: dict[str, Any]) -> tuple[int, dict[str, int]]:
 
 
 async def _fetch_bounty_pages(client: httpx.AsyncClient, max_pages: int = 25) -> tuple[list[dict[str, Any]], int, bool]:
+    now = time.time()
+    if _bounty_cache["rows"] and now - float(_bounty_cache["at"]) < _BOUNTY_CACHE_TTL:
+        return list(_bounty_cache["rows"]), int(_bounty_cache["pages"]), bool(_bounty_cache["has_more"])
+
     all_rows: list[dict[str, Any]] = []
     pages = 0
     has_more = False
@@ -61,7 +75,18 @@ async def _fetch_bounty_pages(client: httpx.AsyncClient, max_pages: int = 25) ->
         has_more = bool(links.get("next")) and len(rows) >= 100
         if not has_more:
             break
+    _bounty_cache.update({"at": time.time(), "rows": list(all_rows), "pages": pages, "has_more": has_more})
     return all_rows, pages, has_more
+
+
+async def _get_own_battlestats(client: httpx.AsyncClient) -> dict[str, Any]:
+    now = time.time()
+    cached = _own_stats_cache.get("data")
+    if cached is not None and now - float(_own_stats_cache["at"]) < _OWN_STATS_CACHE_TTL:
+        return cached
+    data = await app_module._torn_get(client, "/user/battlestats", error_text="battle stats")
+    _own_stats_cache.update({"at": time.time(), "data": data})
+    return data
 
 
 def _bounty_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -181,6 +206,16 @@ async def _target_statuses(client: httpx.AsyncClient, ids: list[int]) -> tuple[d
     results: dict[int, dict] = {}
     errors: list[str] = []
     sem = asyncio.Semaphore(6)
+    now = time.time()
+    unique_ids = list(dict.fromkeys(int(x) for x in ids if int(x) > 0))
+    to_fetch: list[int] = []
+
+    for player_id in unique_ids:
+        cached = _status_cache.get(player_id)
+        if cached and now - cached[0] < _STATUS_CACHE_TTL:
+            results[player_id] = dict(cached[1])
+        else:
+            to_fetch.append(player_id)
 
     async def one(player_id: int):
         async with sem:
@@ -196,15 +231,17 @@ async def _target_statuses(client: httpx.AsyncClient, ids: list[int]) -> tuple[d
                     status = data["profile"].get("status")
                 else:
                     status = {}
-                results[int(player_id)] = {
+                parsed = {
                     "state": str(status.get("state") or "Unknown"),
                     "description": str(status.get("description") or status.get("state") or "Unknown"),
                     "until": int(status.get("until")) if status.get("until") is not None else None,
                 }
+                results[int(player_id)] = parsed
+                _status_cache[int(player_id)] = (time.time(), dict(parsed))
             except Exception as exc:
                 errors.append(f"{player_id}: {exc}")
 
-    await asyncio.gather(*(one(pid) for pid in dict.fromkeys(int(x) for x in ids if int(x) > 0)))
+    await asyncio.gather(*(one(pid) for pid in to_fetch))
     return results, errors
 
 
@@ -274,7 +311,7 @@ async def bounty_scout_search(
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         own_data, bounty_page_result = await asyncio.gather(
-            app_module._torn_get(client, "/user/battlestats", error_text="battle stats"),
+            _get_own_battlestats(client),
             _fetch_bounty_pages(client, max_pages=25),
         )
         bounty_rows_all, bounty_pages, bounty_has_more = bounty_page_result
@@ -347,7 +384,7 @@ async def bounty_scout_search(
     status_checked = 0
     status_errors = []
 
-    status_budget = 70
+    status_budget = 50
     status_candidates_considered = 0
     if availability != "all":
         # Walk the stat-matched pool in reward order until enough visible results
