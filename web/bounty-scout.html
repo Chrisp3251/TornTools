@@ -85,11 +85,11 @@
       <label>Unknown BS
         <select id="includeUnknown"><option value="0" selected>Hide</option><option value="1">Show</option></select>
       </label>
-      <label>Status preference
-        <select id="availabilityMode"><option value="all" selected>Show all results</option><option value="ready_or_soon">Flag ready + hospital soon</option><option value="ready">Flag ready only</option></select>
+      <label>Availability
+        <select id="availabilityMode"><option value="ready_or_soon" selected>Ready + hospital soon</option><option value="ready">Ready only</option><option value="hospital_soon">Hospital soon only</option><option value="all">Show all statuses</option></select>
       </label>
       <label>Hospital soon ≤
-        <select id="hospitalSoonMinutes"><option value="15">15 min</option><option value="30" selected>30 min</option><option value="60">60 min</option></select>
+        <select id="hospitalSoonMinutes"><option value="15">15 min</option><option value="30">30 min</option><option value="60" selected>60 min</option></select>
       </label>
     </div>
 
@@ -103,7 +103,7 @@
 
   <section class="panel">
     <div class="section-head">
-      <div><h2>Targets In Range</h2><p class="muted">All stat-matched results are shown. Live Torn status is filled progressively from cache so status checks do not hide otherwise valid bounties.</p></div>
+      <div><h2>Targets In Range</h2><p class="muted">Main results respect the availability filter. Travel, jail, long hospital stays, and unverified targets stay out until they qualify.</p></div>
       <span id="count" class="pill">0 targets</span>
     </div>
     <div class="table-wrap">
@@ -160,7 +160,7 @@ async function scanBounties(){
     limit:document.getElementById('limit').value||50,
     include_unknown:document.getElementById('includeUnknown').value,
     availability:document.getElementById('availabilityMode')?.value||'ready_or_soon',
-    hospital_soon_minutes:document.getElementById('hospitalSoonMinutes')?.value||30
+    hospital_soon_minutes:document.getElementById('hospitalSoonMinutes')?.value||60
   });
   try{
     const r=await fetch('/api/bounty-scout/search?'+qs.toString());
@@ -170,7 +170,7 @@ async function scanBounties(){
     document.getElementById('count').textContent=d.items.length+' targets';
     const sc=d.status_counts||{};
     const trunc=d.bounty_board_truncated?' · BOARD STILL HAS MORE':'';
-    document.getElementById('summary').textContent='Board rows '+(d.board_rows_scanned||0)+' across '+(d.bounty_pages_scanned||1)+' page(s)'+trunc+' · '+d.source_bounties+' reward/level matches · '+(d.unique_targets||0)+' unique · '+(d.stat_matched_targets||0)+' stat matches · showing '+d.items.length+' · status coverage '+(d.status_coverage_pct??0)+'% · fresh checks '+(d.status_freshly_requested||0)+' · pending '+(d.status_pending||0);
+    document.getElementById('summary').textContent='Board rows '+(d.board_rows_scanned||0)+' across '+(d.bounty_pages_scanned||1)+' page(s)'+trunc+' · '+(d.stat_matched_targets||0)+' stat matches · '+d.items.length+' qualify now · checked '+(d.status_checked||0)+' statuses · pending '+(d.status_pending||0)+' · fresh checks '+(d.status_freshly_requested||0);
     document.getElementById('status').textContent='Updated';
     const body=document.getElementById('rows');
     if(!d.items.length){
