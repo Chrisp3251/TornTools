@@ -28,17 +28,17 @@ _own_bs_cache: dict[str, Any] = {"at": 0.0, "total": None}
 _OWN_BS_TTL = 300
 
 _COUNTRY_ALIASES = {
-    "can": ["canada"],
+    "can": ["canada", "canadian"],
     "mex": ["mexico"],
     "cay": ["cayman", "cayman islands"],
     "haw": ["hawaii"],
-    "uk": ["united kingdom", "uk"],
-    "arg": ["argentina"],
-    "swi": ["switzerland"],
-    "jap": ["japan"],
-    "chi": ["china"],
+    "uk": ["united kingdom", "uk", "british"],
+    "arg": ["argentina", "argentinian"],
+    "swi": ["switzerland", "swiss"],
+    "jap": ["japan", "japanese"],
+    "chi": ["china", "chinese"],
     "uae": ["uae", "united arab emirates"],
-    "saf": ["south africa"],
+    "saf": ["south africa", "south african"],
 }
 
 
@@ -90,11 +90,19 @@ def _country_from_text(text: Any) -> str | None:
 
 
 def _basic_parts(data: dict[str, Any]) -> dict[str, Any]:
-    root = data.get("profile") if isinstance(data.get("profile"), dict) else data
+    # Torn has returned both wrapped v2 profile responses and flatter basic /
+    # profile payloads over time. Accept every status location we know about.
+    candidates = []
+    if isinstance(data, dict):
+        candidates.append(data)
+        for key in ("profile", "basic", "user"):
+            if isinstance(data.get(key), dict):
+                candidates.append(data[key])
+    root = next((x for x in candidates if isinstance(x.get("status"), dict)), candidates[0] if candidates else {})
     status = root.get("status") if isinstance(root, dict) and isinstance(root.get("status"), dict) else {}
     last_action = root.get("last_action") if isinstance(root, dict) and isinstance(root.get("last_action"), dict) else {}
-    state = str(status.get("state") or "Unknown")
-    desc = str(status.get("description") or state)
+    state = str(status.get("state") or root.get("state") or "Unknown")
+    desc = str(status.get("description") or root.get("description") or state)
     try:
         level = int(root.get("level")) if root.get("level") is not None else None
     except Exception:
@@ -180,7 +188,18 @@ async def _search_users(client: httpx.AsyncClient, mode: str, offset: int) -> tu
 async def _read_basic(client: httpx.AsyncClient, player_id: int) -> dict[str, Any] | None:
     try:
         data = await core._torn_get(client, f"/user/{int(player_id)}/basic", error_text="foreign player")
-        return _basic_parts(data)
+        parts = _basic_parts(data)
+        # If basic knows the player but not the foreign city, profile is a
+        # second API-native source for the same public status information.
+        if parts.get("country") is None and str(parts.get("state") or "").lower() in {"abroad", "hospital", "traveling"}:
+            try:
+                profile = await core._torn_get(client, f"/user/{int(player_id)}/profile", error_text="foreign player profile")
+                p2 = _basic_parts(profile)
+                if p2.get("country") is not None or p2.get("description"):
+                    parts = {**parts, **{k:v for k,v in p2.items() if v not in (None, "", "Unknown")}}
+            except Exception:
+                pass
+        return parts
     except Exception:
         return None
 
@@ -469,6 +488,16 @@ async def foreign_monitor_scan(
     rows = _rows_for_display(destination_code, limit)
     rows, own_total, ff_errors = await _enrich_rows(rows)
     warnings.extend(ff_errors)
+    with sqlite3.connect(DB_PATH) as db:
+        diag = db.execute("""
+            SELECT
+              SUM(CASE WHEN destination_code=? THEN 1 ELSE 0 END),
+              SUM(CASE WHEN destination_code=? AND first_landed IS NOT NULL THEN 1 ELSE 0 END)
+            FROM foreign_monitor_players
+        """, (destination_code, destination_code)).fetchone()
+    known_for_country = int((diag or [0,0])[0] or 0)
+    known_landed_for_country = int((diag or [0,0])[1] or 0)
+
     landed = [x for x in rows if x.get("first_landed")]
     inbound = [x for x in rows if not x.get("first_landed") and _country_from_text(x.get("description")) == destination_code]
 
@@ -487,6 +516,8 @@ async def foreign_monitor_scan(
         "stationary_searched_users": len(stationary_discovered),
         "tracked_refreshed": len(tracked_ids),
         "tracked_total": len(_tracked(destination_code, 500)),
+        "known_for_country": known_for_country,
+        "known_landed_for_country": known_landed_for_country,
         "own_total_battlestats": own_total,
         "landed_count": len(landed),
         "inbound_count": len(inbound),
