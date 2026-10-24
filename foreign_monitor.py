@@ -12,6 +12,7 @@ from fastapi import HTTPException, Query
 import app as core
 import bounty_status_runtime as runtime
 import travel_intelligence as ti
+import mug_scout
 
 app = runtime.app
 
@@ -21,6 +22,9 @@ DISCOVERY_BASIC_BUDGET = 16
 TRACKED_REFRESH_BUDGET = 14
 TRACKED_TTL_SECONDS = 24 * 3600
 LANDED_TTL_SECONDS = 3 * 3600
+FF_BATCH_SIZE = 50
+_own_bs_cache: dict[str, Any] = {"at": 0.0, "total": None}
+_OWN_BS_TTL = 300
 
 _COUNTRY_ALIASES = {
     "can": ["canada"],
@@ -221,6 +225,166 @@ def _rows_for_display(destination_code: str, limit: int = 100):
     return out
 
 
+
+async def _own_total_battlestats(client: httpx.AsyncClient) -> int | None:
+    now = time.time()
+    cached = _own_bs_cache.get("total")
+    if cached is not None and now - float(_own_bs_cache.get("at") or 0) < _OWN_BS_TTL:
+        return int(cached)
+    try:
+        data = await core._torn_get(client, "/user/battlestats", error_text="battle stats")
+        root = data.get("battlestats") if isinstance(data, dict) and isinstance(data.get("battlestats"), dict) else data
+        total = 0
+        for key in ("strength", "defense", "speed", "dexterity"):
+            try:
+                raw = root.get(key) if isinstance(root, dict) else 0
+                if isinstance(raw, dict):
+                    raw = raw.get("value") or raw.get("amount") or raw.get("total") or 0
+                total += max(0, int(float(raw or 0)))
+            except Exception:
+                pass
+        if total > 0:
+            _own_bs_cache.update({"at": now, "total": total})
+            return total
+    except Exception:
+        pass
+    return None
+
+
+async def _ff_enrich(client: httpx.AsyncClient, ids: list[int]) -> tuple[dict[int, dict[str, Any]], list[str]]:
+    key, _ = mug_scout._ffscouter_key()
+    if not key:
+        return {}, ["FFScouter API key not loaded"]
+    unique = list(dict.fromkeys(int(x) for x in ids if int(x) > 0))
+    out: dict[int, dict[str, Any]] = {}
+    errors: list[str] = []
+    for start in range(0, len(unique), FF_BATCH_SIZE):
+        batch = unique[start:start + FF_BATCH_SIZE]
+        try:
+            r = await client.get(
+                f"{mug_scout.FFSCOUTER_BASE}/get-stats",
+                params={"key": key, "targets": ",".join(str(x) for x in batch)},
+                timeout=12.0,
+            )
+            data = r.json()
+            if isinstance(data, dict) and data.get("error"):
+                errors.append(str(data.get("error")))
+                continue
+            if not isinstance(data, list):
+                errors.append("FFScouter returned an unexpected response")
+                continue
+            for row in data:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    pid = int(row.get("player_id"))
+                except Exception:
+                    continue
+                out[pid] = row
+        except Exception as exc:
+            errors.append(str(exc))
+    return out, errors
+
+
+def _interest_score(item: dict[str, Any], own_total: int | None) -> dict[str, Any]:
+    estimate = item.get("bs_estimate")
+    ratio_pct = None
+    try:
+        if estimate is not None and own_total:
+            ratio_pct = float(estimate) / float(own_total) * 100.0
+    except Exception:
+        ratio_pct = None
+
+    ff = item.get("fair_fight")
+    try:
+        ff = float(ff) if ff is not None else None
+    except Exception:
+        ff = None
+
+    landed_age = item.get("landed_age_seconds")
+    score = 0
+    reasons = []
+
+    if landed_age is not None:
+        if landed_age <= 120:
+            score += 5; reasons.append("just landed")
+        elif landed_age <= 300:
+            score += 4; reasons.append("very fresh")
+        elif landed_age <= 600:
+            score += 3; reasons.append("fresh")
+        elif landed_age <= 1800:
+            score += 1
+    else:
+        score += 1; reasons.append("inbound")
+
+    if ratio_pct is not None:
+        if ratio_pct <= 30:
+            score += 5; reasons.append("very low BS")
+        elif ratio_pct <= 45:
+            score += 4; reasons.append("low BS")
+        elif ratio_pct <= 60:
+            score += 3
+        elif ratio_pct <= 75:
+            score += 1
+        elif ratio_pct > 100:
+            score -= 4
+
+    if ff is not None:
+        if 2.0 <= ff <= 3.0:
+            score += 2; reasons.append("good FF")
+        elif ff >= 1.5:
+            score += 1
+
+    if score >= 10:
+        label = "HIGH INTEREST"
+    elif score >= 7:
+        label = "WATCH"
+    else:
+        label = "STANDARD"
+    return {"score": score, "label": label, "reasons": reasons, "ratio_pct": round(ratio_pct, 1) if ratio_pct is not None else None}
+
+
+async def _enrich_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int | None, list[str]]:
+    if not rows:
+        return rows, None, []
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        own_total, ff_result = await asyncio.gather(
+            _own_total_battlestats(client),
+            _ff_enrich(client, [int(x["player_id"]) for x in rows]),
+        )
+    ff_map, ff_errors = ff_result
+    for item in rows:
+        ff = ff_map.get(int(item["player_id"])) or {}
+        estimate = ff.get("bs_estimate")
+        try:
+            estimate = int(float(estimate)) if estimate is not None else None
+        except Exception:
+            estimate = None
+        fair_fight = ff.get("fair_fight")
+        try:
+            fair_fight = round(float(fair_fight), 2) if fair_fight is not None else None
+        except Exception:
+            fair_fight = None
+        item["bs_estimate"] = estimate
+        item["bs_estimate_human"] = ff.get("bs_estimate_human")
+        item["fair_fight"] = fair_fight
+        item["ff_source"] = ff.get("source")
+        interest = _interest_score(item, own_total)
+        item["bs_ratio_pct"] = interest["ratio_pct"]
+        item["interest_score"] = interest["score"]
+        item["interest_label"] = interest["label"]
+        item["interest_reasons"] = interest["reasons"]
+    rows.sort(
+        key=lambda x: (
+            1 if x.get("first_landed") is not None else 0,
+            int(x.get("interest_score") or 0),
+            -int(x.get("landed_age_seconds") or 10**9),
+        ),
+        reverse=True,
+    )
+    return rows, own_total, ff_errors
+
+
 @app.post("/api/foreign-monitor/scan")
 async def foreign_monitor_scan(
     country: str | None = Query(default=None),
@@ -265,6 +429,8 @@ async def foreign_monitor_scan(
     _meta_set(f"cursor:{destination_code}", next_offset)
 
     rows = _rows_for_display(destination_code, limit)
+    rows, own_total, ff_errors = await _enrich_rows(rows)
+    warnings.extend(ff_errors)
     landed = [x for x in rows if x.get("first_landed")]
     inbound = [x for x in rows if not x.get("first_landed") and _country_from_text(x.get("description")) == destination_code]
 
@@ -279,6 +445,7 @@ async def foreign_monitor_scan(
         "searched_users": len(discovered),
         "tracked_refreshed": len(tracked_ids),
         "tracked_total": len(_tracked(destination_code, 500)),
+        "own_total_battlestats": own_total,
         "landed_count": len(landed),
         "inbound_count": len(inbound),
         "items": rows,
@@ -293,10 +460,14 @@ async def foreign_monitor_status(country: str | None = Query(default=None), limi
     destination_code = (country or travel.get("destination_code") or "").strip().lower()
     if destination_code not in ti.COUNTRY_NAMES:
         return {"ok": True, "destination_code": None, "destination_name": None, "your_travel": travel, "items": []}
+    rows = _rows_for_display(destination_code, limit)
+    rows, own_total, ff_errors = await _enrich_rows(rows)
     return {
         "ok": True,
         "destination_code": destination_code,
         "destination_name": ti.COUNTRY_NAMES.get(destination_code, destination_code.upper()),
         "your_travel": travel,
-        "items": _rows_for_display(destination_code, limit),
+        "own_total_battlestats": own_total,
+        "items": rows,
+        "warnings": ff_errors[:6],
     }
