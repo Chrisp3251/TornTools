@@ -129,7 +129,7 @@ async function scan(){
     const d=await r.json();
     if(!r.ok) throw new Error(d.detail||JSON.stringify(d));
     render(d);
-    document.getElementById('summary').textContent='Traveler page '+Math.floor((d.search_offset||0)/25+1)+' · '+(d.searched_users||0)+' inbound checked · local page '+Math.floor((d.stationary_search_offset||0)/25+1)+' · '+(d.stationary_searched_users||0)+' already-there checked · refreshed '+(d.tracked_refreshed||0)+' tracked · '+(d.landed_count||0)+' in-country known · your BS '+(d.own_total_battlestats?Number(d.own_total_battlestats).toLocaleString():'—');
+    document.getElementById('summary').textContent='Traveler page '+Math.floor((d.search_offset||0)/25+1)+' · '+(d.searched_users||0)+' inbound checked · local page '+Math.floor((d.stationary_search_offset||0)/25+1)+' · '+(d.stationary_searched_users||0)+' already-there checked · refreshed '+(d.tracked_refreshed||0)+' tracked · DB knows '+(d.known_for_country||0)+' for '+(d.destination_name||'country')+' · '+(d.landed_count||0)+' displayed · your BS '+(d.own_total_battlestats?Number(d.own_total_battlestats).toLocaleString():'—');
     document.getElementById('status').textContent='Updated';
     if(d.warnings?.length){warn.textContent=d.warnings.join(' | ');warn.style.display='block';}
   }catch(e){
