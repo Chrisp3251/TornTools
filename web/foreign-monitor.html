@@ -59,7 +59,7 @@
     <button class="secondary" onclick="window.open('/static/torn-foreign-people.user.js','_blank','noopener')">Open / Install People Sync</button>
     <span id="summary" class="muted">No scan yet.</span>
   </div>
-  <div class="research-note" style="margin-top:12px"><strong>Best in-country discovery:</strong> while viewing the foreign People page in Torn, use the People Sync userscript and click <strong>Sync visible people</strong>. Those exact visible IDs are fed into this monitor and enriched here.</div>
+  <div class="research-note" style="margin-top:12px"><strong>Best in-country discovery:</strong> open <code>https://www.torn.com/index.php?page=people&amp;start=0</code> while abroad. People Sync reads that visible page, then <strong>Sync + next 25</strong> walks the Torn offsets 0 → 25 → 50 → 75… and feeds those exact player IDs into this monitor for Torn + FFScouter enrichment.</div>
   <div id="warning" class="research-note" style="display:none;margin-top:12px"></div>
 </section>
 
