@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         TornTools Foreign People Sync
 // @namespace    http://127.0.0.1:8765/
-// @version      0.1.0
-// @description  Sends player IDs visible on the foreign People page you are actively viewing to TornTools Foreign Monitor.
+// @version      0.2.0
+// @description  Syncs player IDs from Torn index.php?page=people&start=N into TornTools Foreign Monitor, with page-by-page navigation.
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
 // @connect      127.0.0.1
@@ -14,6 +14,7 @@
 
   const ENDPOINT = 'http://127.0.0.1:8765/api/foreign-monitor/seed';
   const PANEL_ID = 'tt-foreign-sync';
+  const PAGE_SIZE = 25;
   const COUNTRY_MAP = [
     ['can', ['canada','canadian']],
     ['mex', ['mexico']],
@@ -27,6 +28,21 @@
     ['uae', ['uae','united arab emirates']],
     ['saf', ['south africa','south african']]
   ];
+
+  function peoplePageInfo() {
+    const u = new URL(location.href);
+    const isPeople = /\/index\.php$/i.test(u.pathname) && u.searchParams.get('page') === 'people';
+    const start = Math.max(0, Number(u.searchParams.get('start') || 0) || 0);
+    return {isPeople, start};
+  }
+
+  function peoplePageUrl(start) {
+    const u = new URL(location.href);
+    u.pathname = '/index.php';
+    u.searchParams.set('page', 'people');
+    u.searchParams.set('start', String(Math.max(0, Number(start) || 0)));
+    return u.toString();
+  }
 
   function detectCountry() {
     const hay = (document.title + ' ' + location.href + ' ' + (document.body?.innerText || '').slice(0,12000)).toLowerCase();
@@ -96,19 +112,38 @@
     document.documentElement.appendChild(style);
     const p=document.createElement('div');
     p.id=PANEL_ID;
-    p.innerHTML='<div class="tt-title">TornTools Foreign Sync</div><div id="tt-foreign-state">Open a foreign People page, then sync the visible players.</div><button id="tt-foreign-btn">Sync visible people</button><div class="tt-muted">Manual sync only. Sends visible player IDs to localhost TornTools.</div>';
+    const page=peoplePageInfo();
+    p.innerHTML='<div class="tt-title">TornTools Foreign Sync</div>'+
+      '<div id="tt-foreign-state">'+(page.isPeople?'People page offset '+page.start+'. Ready to sync.':'Open Torn People: index.php?page=people&start=0')+'</div>'+
+      '<button id="tt-foreign-btn">Sync visible people</button> '+
+      '<button id="tt-foreign-next">Sync + next 25</button> '+
+      '<button id="tt-foreign-prev">Previous 25</button>'+
+      '<div class="tt-muted">Uses the visible Torn People page. Current offset: '+page.start+'.</div>';
     document.body.appendChild(p);
-    p.querySelector('#tt-foreign-btn').addEventListener('click', async()=>{
+
+    async function syncCurrent(goNext){
       const state=p.querySelector('#tt-foreign-state');
+      const pageNow=peoplePageInfo();
+      if(!pageNow.isPeople){ state.textContent='Open https://www.torn.com/index.php?page=people&start=0 first.'; return; }
       const country=detectCountry();
       const players=extractPlayers();
-      if(!country){ state.textContent='Could not detect the foreign country on this page.'; return; }
-      if(!players.length){ state.textContent='No player profile links were found on this page.'; return; }
-      state.textContent='Syncing '+players.length+' visible players…';
+      if(!country){ state.textContent='Could not detect your foreign country on this People page.'; return; }
+      if(!players.length){ state.textContent='No player profile links were found at offset '+pageNow.start+'.'; return; }
+      state.textContent='Syncing '+players.length+' players from offset '+pageNow.start+'…';
       try{
         const d=await post(country,players);
-        state.textContent='Synced '+d.matched+' / '+d.received+' visible players to '+(d.country_name||country.toUpperCase())+'.';
+        state.textContent='Synced '+d.matched+' / '+d.received+' to '+(d.country_name||country.toUpperCase())+' from offset '+pageNow.start+'.';
+        if(goNext){
+          setTimeout(()=>{ location.href=peoplePageUrl(pageNow.start + PAGE_SIZE); },350);
+        }
       }catch(e){ state.textContent='Sync failed: '+(e.message||e); }
+    }
+
+    p.querySelector('#tt-foreign-btn').addEventListener('click', ()=>syncCurrent(false));
+    p.querySelector('#tt-foreign-next').addEventListener('click', ()=>syncCurrent(true));
+    p.querySelector('#tt-foreign-prev').addEventListener('click', ()=>{
+      const pageNow=peoplePageInfo();
+      location.href=peoplePageUrl(Math.max(0,pageNow.start-PAGE_SIZE));
     });
   }
 
