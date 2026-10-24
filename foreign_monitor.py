@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 from fastapi import HTTPException, Query
+from pydantic import BaseModel
 
 import app as core
 import bounty_status_runtime as runtime
@@ -26,6 +27,17 @@ LANDED_TTL_SECONDS = 3 * 3600
 FF_BATCH_SIZE = 50
 _own_bs_cache: dict[str, Any] = {"at": 0.0, "total": None}
 _OWN_BS_TTL = 300
+
+
+class ForeignSeedPlayer(BaseModel):
+    player_id: int
+    name: str | None = None
+    level: int | None = None
+
+
+class ForeignSeedPayload(BaseModel):
+    country: str
+    players: list[ForeignSeedPlayer]
 
 _COUNTRY_ALIASES = {
     "can": ["canada", "canadian"],
@@ -413,6 +425,66 @@ async def _enrich_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]]
         reverse=True,
     )
     return rows, own_total, ff_errors
+
+
+
+@app.post("/api/foreign-monitor/seed")
+async def foreign_monitor_seed(payload: ForeignSeedPayload):
+    destination_code = str(payload.country or "").strip().lower()
+    if destination_code not in ti.COUNTRY_NAMES:
+        raise HTTPException(400, "Unknown foreign country code")
+
+    unique: dict[int, ForeignSeedPlayer] = {}
+    for player in payload.players[:250]:
+        if int(player.player_id) > 0:
+            unique[int(player.player_id)] = player
+
+    ids = list(unique)
+    if not ids:
+        return {"ok": True, "country": destination_code, "received": 0, "matched": 0, "items": []}
+
+    matched_ids: list[int] = []
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        sem = asyncio.Semaphore(6)
+        async def one(pid: int):
+            async with sem:
+                parts = await _read_basic(client, pid)
+                if not parts:
+                    return
+                seed = unique.get(pid)
+                if seed:
+                    if not parts.get("name") and seed.name:
+                        parts["name"] = seed.name
+                    if parts.get("level") is None and seed.level is not None:
+                        parts["level"] = seed.level
+                # The visible foreign People page is authoritative for the seed
+                # country. If Torn's basic/profile response omits the city, keep
+                # the seed anyway but mark it as page-observed.
+                if parts.get("country") is None:
+                    parts["country"] = destination_code
+                    state = str(parts.get("state") or "Abroad")
+                    if state.lower() in {"unknown", "okay", "idle"}:
+                        state = "Abroad"
+                    parts["state"] = state
+                    parts["description"] = str(parts.get("description") or f"In {ti.COUNTRY_NAMES[destination_code]}")
+                if parts.get("country") == destination_code:
+                    _upsert(pid, parts, destination_code, "people-page")
+                    matched_ids.append(pid)
+
+        await asyncio.gather(*(one(pid) for pid in ids))
+
+    rows = _rows_for_display(destination_code, 250)
+    rows, own_total, ff_errors = await _enrich_rows(rows)
+    return {
+        "ok": True,
+        "country": destination_code,
+        "country_name": ti.COUNTRY_NAMES.get(destination_code, destination_code.upper()),
+        "received": len(ids),
+        "matched": len(matched_ids),
+        "own_total_battlestats": own_total,
+        "items": rows,
+        "warnings": ff_errors[:6],
+    }
 
 
 @app.post("/api/foreign-monitor/scan")
