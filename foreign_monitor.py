@@ -19,6 +19,7 @@ app = runtime.app
 DB_PATH = core.DB_PATH
 DISCOVERY_PAGE_SIZE = 25
 DISCOVERY_BASIC_BUDGET = 16
+STATIONARY_DISCOVERY_BUDGET = 18
 TRACKED_REFRESH_BUDGET = 14
 TRACKED_TTL_SECONDS = 24 * 3600
 LANDED_TTL_SECONDS = 3 * 3600
@@ -153,12 +154,22 @@ def _tracked(destination_code: str, limit: int = 100) -> list[dict[str, Any]]:
     return [dict(zip(keys, row)) for row in rows]
 
 
-async def _search_travelers(client: httpx.AsyncClient, offset: int) -> tuple[list[dict[str, Any]], int | None]:
+async def _search_users(client: httpx.AsyncClient, mode: str, offset: int) -> tuple[list[dict[str, Any]], int | None]:
+    if mode == "traveling":
+        filters = "traveling,lastActionRecent"
+        error_text = "traveler search"
+    else:
+        # While the user is abroad, this second lane discovers people who are
+        # already stationary in that foreign country. Torn search cannot filter
+        # by country, so we rotate through active non-travelers and keep only
+        # those whose basic status resolves to our destination.
+        filters = "notTraveling,lastActionNow"
+        error_text = "stationary user search"
     data = await core._torn_get(
         client,
         "/user/search",
-        {"filters": "traveling,lastActionRecent", "offset": int(offset)},
-        error_text="traveler search",
+        {"filters": filters, "offset": int(offset)},
+        error_text=error_text,
     )
     rows = data.get("search") if isinstance(data, dict) else []
     meta = data.get("_metadata") if isinstance(data, dict) else {}
@@ -398,16 +409,19 @@ async def foreign_monitor_scan(
     tracked = _tracked(destination_code, 150)
     tracked_ids = [int(x["player_id"]) for x in tracked[:TRACKED_REFRESH_BUDGET]]
 
-    offset = int(_meta_get(f"cursor:{destination_code}", "0") or 0)
+    travel_offset = int(_meta_get(f"cursor:travel:{destination_code}", "0") or 0)
+    stationary_offset = int(_meta_get(f"cursor:stationary:{destination_code}", "0") or 0)
     discovered = []
+    stationary_discovered = []
     total = None
+    stationary_total = None
     warnings = []
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         if tracked_ids:
             await _refresh_ids(client, tracked_ids, destination_code, "tracked")
         try:
-            search_rows, total = await _search_travelers(client, offset)
+            search_rows, total = await _search_users(client, "traveling", travel_offset)
             discovered = search_rows[:DISCOVERY_BASIC_BUDGET]
             discovery_ids = []
             for row in discovered:
@@ -416,17 +430,41 @@ async def foreign_monitor_scan(
                 except Exception:
                     pass
             if discovery_ids:
-                await _refresh_ids(client, discovery_ids, destination_code, "search")
+                await _refresh_ids(client, discovery_ids, destination_code, "search-travel")
         except Exception as exc:
             warnings.append(str(getattr(exc, "detail", exc)))
-            search_rows = []
 
-    next_offset = offset + DISCOVERY_PAGE_SIZE
-    if total is not None and next_offset >= total:
-        next_offset = 0
-    elif next_offset >= 500:
-        next_offset = 0
-    _meta_set(f"cursor:{destination_code}", next_offset)
+        # If we are already abroad, add a second discovery lane for active
+        # stationary users. This is what finds players who were in Canada before
+        # TornTools started watching them.
+        if str(travel.get("state") or "") == "ABROAD":
+            try:
+                stationary_rows, stationary_total = await _search_users(client, "stationary", stationary_offset)
+                stationary_discovered = stationary_rows[:STATIONARY_DISCOVERY_BUDGET]
+                stationary_ids = []
+                for row in stationary_discovered:
+                    try:
+                        stationary_ids.append(int(row.get("id")))
+                    except Exception:
+                        pass
+                if stationary_ids:
+                    await _refresh_ids(client, stationary_ids, destination_code, "search-stationary")
+            except Exception as exc:
+                warnings.append(str(getattr(exc, "detail", exc)))
+
+    next_travel_offset = travel_offset + DISCOVERY_PAGE_SIZE
+    if total is not None and next_travel_offset >= total:
+        next_travel_offset = 0
+    elif next_travel_offset >= 500:
+        next_travel_offset = 0
+    _meta_set(f"cursor:travel:{destination_code}", next_travel_offset)
+
+    next_stationary_offset = stationary_offset + DISCOVERY_PAGE_SIZE
+    if stationary_total is not None and next_stationary_offset >= stationary_total:
+        next_stationary_offset = 0
+    elif next_stationary_offset >= 1000:
+        next_stationary_offset = 0
+    _meta_set(f"cursor:stationary:{destination_code}", next_stationary_offset)
 
     rows = _rows_for_display(destination_code, limit)
     rows, own_total, ff_errors = await _enrich_rows(rows)
@@ -439,10 +477,14 @@ async def foreign_monitor_scan(
         "destination_code": destination_code,
         "destination_name": ti.COUNTRY_NAMES.get(destination_code, destination_code.upper()),
         "your_travel": travel,
-        "search_offset": offset,
-        "next_search_offset": next_offset,
+        "search_offset": travel_offset,
+        "next_search_offset": next_travel_offset,
         "search_total": total,
         "searched_users": len(discovered),
+        "stationary_search_offset": stationary_offset,
+        "stationary_next_search_offset": next_stationary_offset,
+        "stationary_search_total": stationary_total,
+        "stationary_searched_users": len(stationary_discovered),
         "tracked_refreshed": len(tracked_ids),
         "tracked_total": len(_tracked(destination_code, 500)),
         "own_total_battlestats": own_total,
