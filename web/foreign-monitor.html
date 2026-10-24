@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TornTools Foreign Monitor</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+.home-btn{position:fixed;top:14px;left:14px;z-index:1000;width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;text-decoration:none;background:#171e28;border:1px solid var(--line);color:var(--text);font-size:20px}
+.controls{display:flex;gap:10px;align-items:end;flex-wrap:wrap}
+.controls label{display:grid;gap:6px;color:var(--muted);font-size:12px}
+.controls select,.controls input{background:#0d1219;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:9px 10px}
+.arrival-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:12px 0}
+.card{border:1px solid var(--line);border-radius:10px;padding:12px;background:#10161f}
+.card strong{display:block;font-size:22px;margin-top:4px}
+.tag{display:inline-block;padding:3px 7px;border-radius:999px;border:1px solid var(--line);font-size:10px;font-weight:800}
+.tag.hot{color:var(--good);border-color:var(--good)}
+.tag.fresh{color:var(--warn);border-color:var(--warn)}
+.tag.inbound{color:#8bb7ff;border-color:#8bb7ff}
+.actions{display:flex;gap:5px;flex-wrap:wrap}
+.actions a{display:inline-block;padding:5px 7px;border-radius:7px;border:1px solid var(--line);text-decoration:none;color:var(--text);font-size:10px}
+.foreign-table{width:100%;table-layout:fixed;font-size:12px}
+.foreign-table th,.foreign-table td{padding:8px 7px;vertical-align:top;overflow-wrap:anywhere}
+.foreign-table th:nth-child(1){width:26%}.foreign-table th:nth-child(2){width:10%}.foreign-table th:nth-child(3){width:18%}.foreign-table th:nth-child(4){width:28%}.foreign-table th:nth-child(5){width:18%}
+@media(max-width:800px){.arrival-grid{grid-template-columns:1fr 1fr}.foreign-table{font-size:10px}}
+</style>
+</head>
+<body>
+<a class="home-btn" href="/" title="TornTools Home">⌂</a>
+<main>
+<header class="topbar">
+  <div>
+    <div class="eyebrow">TORNTOOLS · FOREIGN MONITOR</div>
+    <h1>Foreign Arrival Monitor</h1>
+    <p>Tracks active travelers, learns who is heading to your destination, and timestamps the first time TornTools observes them landed.</p>
+  </div>
+  <span id="status" class="pill">Ready</span>
+</header>
+
+<section class="panel">
+  <div class="section-head">
+    <div><h2>Monitor</h2><p class="muted">Auto-detects your destination from Torn travel state. Canada should be selected while you are flying there.</p></div>
+    <span id="destination" class="pill">Destination: —</span>
+  </div>
+  <div class="controls">
+    <label>Country
+      <select id="country">
+        <option value="">Auto detect</option>
+        <option value="can">Canada</option><option value="mex">Mexico</option><option value="cay">Cayman Islands</option>
+        <option value="haw">Hawaii</option><option value="uk">United Kingdom</option><option value="arg">Argentina</option>
+        <option value="swi">Switzerland</option><option value="jap">Japan</option><option value="chi">China</option>
+        <option value="uae">UAE</option><option value="saf">South Africa</option>
+      </select>
+    </label>
+    <label>Auto refresh
+      <select id="refreshEvery"><option value="0">Off</option><option value="45" selected>45 sec</option><option value="60">60 sec</option><option value="90">90 sec</option></select>
+    </label>
+    <button id="scanBtn" onclick="scan()">Scan Travelers</button>
+    <span id="summary" class="muted">No scan yet.</span>
+  </div>
+  <div id="warning" class="research-note" style="display:none;margin-top:12px"></div>
+</section>
+
+<section class="panel">
+  <div class="arrival-grid">
+    <div class="card"><span class="muted">Just landed ≤2m</span><strong id="justCount">0</strong></div>
+    <div class="card"><span class="muted">Fresh ≤10m</span><strong id="freshCount">0</strong></div>
+    <div class="card"><span class="muted">Inbound tracked</span><strong id="inboundCount">0</strong></div>
+    <div class="card"><span class="muted">Tracked pool</span><strong id="trackedCount">0</strong></div>
+  </div>
+
+  <div class="table-wrap" style="overflow-x:hidden">
+    <table class="research-table foreign-table">
+      <thead><tr><th>Player</th><th>Level</th><th>Arrival</th><th>Status</th><th>Actions</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="5" class="muted">Run a scan to begin learning travelers.</td></tr></tbody>
+    </table>
+  </div>
+  <div class="research-note" style="margin-top:12px"><strong>Observed timing:</strong> “landed” time is when TornTools first sees the player abroad in this country. Accuracy improves as the tracked pool grows and scans repeat.</div>
+</section>
+</main>
+<script>
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let timer=null;
+
+function ageText(sec){
+  if(sec==null) return 'Inbound';
+  sec=Number(sec);
+  if(sec<60) return Math.max(0,Math.round(sec))+'s ago';
+  if(sec<3600) return Math.round(sec/60)+'m ago';
+  return (sec/3600).toFixed(1)+'h ago';
+}
+
+function render(d){
+  document.getElementById('destination').textContent='Destination: '+(d.destination_name||'—');
+  const items=d.items||[];
+  const just=items.filter(x=>x.landed_age_seconds!=null&&x.landed_age_seconds<=120).length;
+  const fresh=items.filter(x=>x.landed_age_seconds!=null&&x.landed_age_seconds<=600).length;
+  const inbound=items.filter(x=>x.first_landed==null).length;
+  document.getElementById('justCount').textContent=just;
+  document.getElementById('freshCount').textContent=fresh;
+  document.getElementById('inboundCount').textContent=d.inbound_count??inbound;
+  document.getElementById('trackedCount').textContent=d.tracked_total??items.length;
+
+  const body=document.getElementById('rows');
+  if(!items.length){body.innerHTML='<tr><td colspan="5" class="muted">No destination travelers learned yet. Keep the page open while traveling; the monitor rotates through active traveler search pages.</td></tr>';return;}
+  body.innerHTML=items.map(x=>{
+    const cls=x.freshness==='JUST LANDED'?'hot':x.freshness==='FRESH'?'fresh':x.freshness==='INBOUND'?'inbound':'';
+    return '<tr>'+
+      '<td><strong>'+esc(x.name)+'</strong><div class="mini">['+x.player_id+']</div></td>'+
+      '<td>'+(x.level??'—')+'</td>'+
+      '<td><span class="tag '+cls+'">'+esc(x.freshness)+'</span><div class="mini">'+ageText(x.landed_age_seconds)+'</div></td>'+
+      '<td>'+esc(x.description||x.state||'Unknown')+'</td>'+
+      '<td><div class="actions"><a href="'+x.profile_url+'" target="_blank" rel="noopener">Profile</a><a href="'+x.attack_url+'" target="_blank" rel="noopener">Attack</a></div></td>'+
+    '</tr>';
+  }).join('');
+}
+
+async function scan(){
+  const btn=document.getElementById('scanBtn'), warn=document.getElementById('warning');
+  btn.disabled=true; btn.textContent='Scanning…'; document.getElementById('status').textContent='Scanning…'; warn.style.display='none';
+  try{
+    const country=document.getElementById('country').value;
+    const qs=country?'?country='+encodeURIComponent(country):'';
+    const r=await fetch('/api/foreign-monitor/scan'+qs,{method:'POST'});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.detail||JSON.stringify(d));
+    render(d);
+    document.getElementById('summary').textContent='Search page '+Math.floor((d.search_offset||0)/25+1)+' · searched '+(d.searched_users||0)+' travelers · refreshed '+(d.tracked_refreshed||0)+' tracked · '+(d.landed_count||0)+' landed known';
+    document.getElementById('status').textContent='Updated';
+    if(d.warnings?.length){warn.textContent=d.warnings.join(' | ');warn.style.display='block';}
+  }catch(e){
+    document.getElementById('status').textContent='Error'; warn.textContent=e.message||String(e);warn.style.display='block';
+  }finally{btn.disabled=false;btn.textContent='Scan Travelers';}
+}
+
+function armTimer(){
+  if(timer) clearInterval(timer);
+  const sec=Number(document.getElementById('refreshEvery').value||0);
+  if(sec>0) timer=setInterval(scan,sec*1000);
+}
+document.getElementById('refreshEvery').addEventListener('change',armTimer);
+document.getElementById('country').addEventListener('change',scan);
+armTimer();
+scan();
+</script>
+</body>
+</html>
