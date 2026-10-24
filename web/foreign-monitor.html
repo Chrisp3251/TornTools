@@ -56,8 +56,10 @@
       <select id="refreshEvery"><option value="0">Off</option><option value="45" selected>45 sec</option><option value="60">60 sec</option><option value="90">90 sec</option></select>
     </label>
     <button id="scanBtn" onclick="scan()">Scan Travelers</button>
+    <button class="secondary" onclick="window.open('/static/torn-foreign-people.user.js','_blank','noopener')">Open / Install People Sync</button>
     <span id="summary" class="muted">No scan yet.</span>
   </div>
+  <div class="research-note" style="margin-top:12px"><strong>Best in-country discovery:</strong> while viewing the foreign People page in Torn, use the People Sync userscript and click <strong>Sync visible people</strong>. Those exact visible IDs are fed into this monitor and enriched here.</div>
   <div id="warning" class="research-note" style="display:none;margin-top:12px"></div>
 </section>
 
