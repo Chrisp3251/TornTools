@@ -77,6 +77,11 @@ def _init_db():
                 value TEXT
             )
         """)
+        existing = {row[1] for row in c.execute("PRAGMA table_info(foreign_monitor_players)").fetchall()}
+        if "status_until" not in existing:
+            c.execute("ALTER TABLE foreign_monitor_players ADD COLUMN status_until REAL")
+        if "travel_type" not in existing:
+            c.execute("ALTER TABLE foreign_monitor_players ADD COLUMN travel_type TEXT")
 
 
 _init_db()
@@ -115,6 +120,16 @@ def _basic_parts(data: dict[str, Any]) -> dict[str, Any]:
     last_action = root.get("last_action") if isinstance(root, dict) and isinstance(root.get("last_action"), dict) else {}
     state = str(status.get("state") or root.get("state") or "Unknown")
     desc = str(status.get("description") or root.get("description") or state)
+    raw_until = status.get("until") if isinstance(status, dict) else None
+    try:
+        status_until = int(raw_until) if raw_until is not None else None
+    except Exception:
+        status_until = None
+    travel_type = None
+    if isinstance(status, dict):
+        travel_type = status.get("travel_type") or status.get("travelType")
+    if travel_type is None and isinstance(root, dict):
+        travel_type = root.get("travel_type") or root.get("travelType")
     try:
         level = int(root.get("level")) if root.get("level") is not None else None
     except Exception:
@@ -126,6 +141,8 @@ def _basic_parts(data: dict[str, Any]) -> dict[str, Any]:
         "description": desc,
         "country": _country_from_text(desc),
         "last_action": last_action,
+        "status_until": status_until,
+        "travel_type": str(travel_type) if travel_type is not None else None,
     }
 
 
@@ -151,12 +168,12 @@ def _upsert(player_id: int, parts: dict[str, Any], destination_code: str, source
         first_landed = float(old[1]) if old and old[1] else (now if landed else None)
         c.execute("""
             INSERT OR REPLACE INTO foreign_monitor_players
-            (player_id,name,level,destination_code,state,description,first_seen,last_seen,first_landed,last_checked,source)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            (player_id,name,level,destination_code,state,description,first_seen,last_seen,first_landed,last_checked,source,status_until,travel_type)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             int(player_id), parts.get("name"), parts.get("level"), destination_code,
             parts.get("state"), parts.get("description"), first_seen, now,
-            first_landed, now, source,
+            first_landed, now, source, parts.get("status_until"), parts.get("travel_type"),
         ))
 
 
@@ -164,13 +181,13 @@ def _tracked(destination_code: str, limit: int = 100) -> list[dict[str, Any]]:
     cutoff = time.time() - TRACKED_TTL_SECONDS
     with sqlite3.connect(DB_PATH) as c:
         rows = c.execute("""
-            SELECT player_id,name,level,destination_code,state,description,first_seen,last_seen,first_landed,last_checked,source
+            SELECT player_id,name,level,destination_code,state,description,first_seen,last_seen,first_landed,last_checked,source,status_until,travel_type
             FROM foreign_monitor_players
             WHERE destination_code=? AND last_seen>=?
             ORDER BY CASE WHEN first_landed IS NULL THEN 0 ELSE 1 END, last_checked ASC
             LIMIT ?
         """, (destination_code, cutoff, int(limit))).fetchall()
-    keys = ["player_id","name","level","destination_code","state","description","first_seen","last_seen","first_landed","last_checked","source"]
+    keys = ["player_id","name","level","destination_code","state","description","first_seen","last_seen","first_landed","last_checked","source","status_until","travel_type"]
     return [dict(zip(keys, row)) for row in rows]
 
 
@@ -236,7 +253,7 @@ def _rows_for_display(destination_code: str, limit: int = 100):
     cutoff = now - LANDED_TTL_SECONDS
     with sqlite3.connect(DB_PATH) as c:
         rows = c.execute("""
-            SELECT player_id,name,level,state,description,first_seen,last_seen,first_landed,last_checked,source
+            SELECT player_id,name,level,state,description,first_seen,last_seen,first_landed,last_checked,source,status_until,travel_type
             FROM foreign_monitor_players
             WHERE destination_code=? AND (first_landed IS NULL OR first_landed>=?)
             ORDER BY
@@ -246,9 +263,10 @@ def _rows_for_display(destination_code: str, limit: int = 100):
         """, (destination_code, cutoff, int(limit))).fetchall()
     out = []
     for row in rows:
-        pid,name,level,state,desc,first_seen,last_seen,first_landed,last_checked,source = row
+        pid,name,level,state,desc,first_seen,last_seen,first_landed,last_checked,source,status_until,travel_type = row
         landed_age = int(now - first_landed) if first_landed else None
         first_seen_age = int(now - first_seen) if first_seen else None
+        eta_seconds = max(0, int(status_until - now)) if status_until and str(state or "").lower() == "traveling" else None
         out.append({
             "player_id": pid,
             "name": name or f"Player {pid}",
@@ -259,6 +277,9 @@ def _rows_for_display(destination_code: str, limit: int = 100):
             "first_landed": first_landed,
             "landed_age_seconds": landed_age,
             "tracked_age_seconds": first_seen_age,
+            "eta_seconds": eta_seconds,
+            "status_until": status_until,
+            "travel_type": travel_type,
             "freshness": "JUST LANDED" if landed_age is not None and landed_age <= 120 else "FRESH" if landed_age is not None and landed_age <= 600 else "LANDED" if landed_age is not None else "INBOUND",
             "profile_url": f"https://www.torn.com/profiles.php?XID={pid}",
             "attack_url": f"https://www.torn.com/loader.php?sid=attack&user2ID={pid}",
