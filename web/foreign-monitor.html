@@ -73,7 +73,7 @@
 
   <div class="table-wrap" style="overflow-x:hidden">
     <table class="research-table foreign-table">
-      <thead><tr><th>Player / Interest</th><th>Level</th><th>Arrival</th><th>Combat</th><th>Status</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Player / Interest</th><th>Level</th><th>Timer</th><th>Combat</th><th>Status</th><th>Actions</th></tr></thead>
       <tbody id="rows"><tr><td colspan="6" class="muted">Run a scan to begin learning travelers.</td></tr></tbody>
     </table>
   </div>
@@ -85,11 +85,21 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 let timer=null;
 
 function ageText(sec){
-  if(sec==null) return 'Inbound';
+  if(sec==null) return '—';
   sec=Number(sec);
-  if(sec<60) return Math.max(0,Math.round(sec))+'s ago';
-  if(sec<3600) return Math.round(sec/60)+'m ago';
-  return (sec/3600).toFixed(1)+'h ago';
+  if(sec<60) return Math.max(0,Math.round(sec))+'s';
+  if(sec<3600) return Math.floor(sec/60)+'m '+Math.round(sec%60)+'s';
+  return Math.floor(sec/3600)+'h '+Math.round((sec%3600)/60)+'m';
+}
+
+function timerCell(x){
+  if(x.eta_seconds!=null){
+    return '<span class="tag inbound">LANDING IN</span><div><strong>'+ageText(x.eta_seconds)+'</strong></div><div class="mini">'+esc(x.travel_type||'traveling')+'</div>';
+  }
+  if(x.landed_age_seconds!=null){
+    return '<span class="tag '+(x.landed_age_seconds<=120?'hot':x.landed_age_seconds<=600?'fresh':'')+'">'+esc(x.freshness)+'</span><div><strong>'+ageText(x.landed_age_seconds)+' here</strong></div>';
+  }
+  return '<span class="tag inbound">TRACKING</span><div class="mini">Waiting for travel timer</div>';
 }
 
 function render(d){
@@ -113,7 +123,7 @@ function render(d){
     return '<tr>'+
       '<td><strong>'+esc(x.name)+'</strong><div class="mini">['+x.player_id+']</div><div><span class="tag '+interestClass+'">'+esc(x.interest_label||'STANDARD')+'</span></div>'+(reasons?'<div class="mini">'+esc(reasons)+'</div>':'')+'</td>'+
       '<td>'+(x.level??'—')+'</td>'+
-      '<td><span class="tag '+cls+'">'+esc(x.freshness)+'</span><div class="mini">'+ageText(x.landed_age_seconds)+'</div></td>'+
+      '<td>'+timerCell(x)+'</td>'+
       '<td><strong>'+esc(combat)+'</strong><div class="mini">'+esc(x.ff_source||'FFScouter')+'</div></td>'+
       '<td>'+esc(x.description||x.state||'Unknown')+'</td>'+
       '<td><div class="actions"><a href="'+x.profile_url+'" target="_blank" rel="noopener">Profile</a><a href="'+x.attack_url+'" target="_blank" rel="noopener">Attack</a></div></td>'+
