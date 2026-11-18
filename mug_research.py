@@ -462,7 +462,7 @@ async def _inactive_search_candidates(client, min_days, max_days, max_pages=8):
         meta=data.get("_metadata") if isinstance(data,dict) else {}
         links=meta.get("links") if isinstance(meta,dict) else {}
         if not isinstance(links,dict) or not links.get("next"):break
-    return out
+    return out, {"source_filter":source_filter,"raw_seen":raw_seen}
 
 
 async def _oil_type_id(client):
