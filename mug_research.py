@@ -385,7 +385,7 @@ async def _ff_map_v5(client, ids):
                     except Exception: pass
         except Exception:
             pass
-    return out
+    return out, {"source_filter":source_filter,"raw_seen":raw_seen}
 
 
 async def _billionaire_medal_id(client):
@@ -434,15 +434,25 @@ async def _has_medal(client, player_id, medal_id):
 
 
 async def _inactive_search_candidates(client, min_days, max_days, max_pages=8):
-    now=int(time.time()); out=[]; seen=set()
-    # lastActionMonthAgo gives us a useful broad pool; exact 15-30d is enforced locally.
+    now=int(time.time()); out=[]; seen=set(); raw_seen=0
+    # Torn's last-action filters are buckets. For a 15-30 day target window,
+    # lastActionWeekAgo is the correct broad source bucket; MonthAgo starts too late.
+    if max_days <= 7:
+        source_filter="lastActionDayAgo"
+    elif max_days <= 30:
+        source_filter="lastActionWeekAgo"
+    elif max_days <= 365:
+        source_filter="lastActionMonthAgo"
+    else:
+        source_filter="lastActionYearAgo"
     for page in range(max_pages):
         try:
-            data=await app_module._torn_get(client,"/user/search",{"filters":"lastActionMonthAgo","offset":page*25},error_text="user search")
+            data=await app_module._torn_get(client,"/user/search",{"filters":source_filter,"offset":page*25},error_text="user search")
         except Exception:
             break
         rows=data.get("search") if isinstance(data,dict) else None
         if not isinstance(rows,list) or not rows:break
+        raw_seen += len(rows)
         for row in rows:
             p=_player_from_search_row(row)
             if not p or p["player_id"] in seen or p["last_action"] is None:continue
@@ -582,9 +592,10 @@ async def mug_scout_search_v5(
 
         if mode=="oil":
             candidates,total_companies,companies_scanned=await _oil_candidates(client,mininactive_days,maxinactive_days)
+            inactive_diag={"source_filter":"oil-company-employees","raw_seen":None}
             medal_id=None
         else:
-            candidates=await _inactive_search_candidates(client,mininactive_days,maxinactive_days)
+            candidates,inactive_diag=await _inactive_search_candidates(client,mininactive_days,maxinactive_days)
             total_companies=companies_scanned=0
             medal_id=await _billionaire_medal_id(client)
 
@@ -602,13 +613,16 @@ async def mug_scout_search_v5(
             safe.append((p,ff))
 
         rows=[]
+        medal_checked=0
         if mode=="billionaire":
             if medal_id:
                 sem=asyncio.Semaphore(5)
                 async def check(pair):
+                    nonlocal medal_checked
                     p,ff=pair
                     async with sem:
                         ok=await _has_medal(client,p["player_id"],medal_id)
+                    medal_checked += 1
                     if ok: rows.append(_build_v5_row(p,ff,own_bs,"billionaire",True))
                 await asyncio.gather(*(check(pair) for pair in safe[:40]))
         else:
@@ -628,12 +642,23 @@ async def mug_scout_search_v5(
         "own_total_battlestats":own_bs,
         "source_candidates":len(candidates),
         "safe_candidates":len(safe),
+        "diagnostics":{
+            "source_filter":inactive_diag.get("source_filter"),
+            "raw_source_rows":inactive_diag.get("raw_seen"),
+            "inactive_window_matches":len(candidates),
+            "ffscouter_known":sum(1 for p in candidates if int(p["player_id"]) in ffmap),
+            "bs_safe":len(safe),
+            "billionaire_medal_id":medal_id,
+            "medals_checked":medal_checked,
+            "verified_billionaires":len(rows) if mode=="billionaire" else None,
+        },
         "items":rows,
         "oil_companies_total":total_companies,
         "oil_companies_scanned":companies_scanned,
         "notes":[
             "FF/fair-fight is not part of Mug Score; FFScouter is used only to reject targets estimated above your total battle stats.",
             "Billionaire mode requires Torn's Billionaire medal and the requested inactivity window.",
+            "Diagnostics report each filtering stage so an empty result can be traced instead of silently returning nothing.",
             "Oil Rig mode rotates through public Oil Rig companies and looks for employees in the requested inactivity window.",
         ],
     }
