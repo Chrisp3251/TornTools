@@ -1,12 +1,17 @@
+import asyncio
 import math
 import sqlite3
 import time
+
+import httpx
 from pathlib import Path
 
 from fastapi import HTTPException, Query
 from pydantic import BaseModel
 
 import mug_scout_v036
+import app as app_module
+import mug_scout
 import evidence_hardening
 from mug_scout_v036 import app
 
@@ -303,5 +308,332 @@ async def player_mug_history(player_id: int):
         "items": [
             {"id":r[0],"ts":r[1],"amount":r[2],"fair_fight":r[3],"inactive_days":r[4],"property_name":r[5],"property_ownership":r[6],"target_score":r[7],"status":r[8]}
             for r in rows
+        ],
+    }
+
+
+# --- Mug Scout v5: wealth/inactivity + company hunting ----------------------
+MUG_SCOUT_V5_VERSION = "0.5.0"
+_oil_type_cache = {"at": 0.0, "id": None}
+_medal_cache = {"at": 0.0, "billionaire_id": None}
+_own_bs_cache = {"at": 0.0, "total": None}
+_oil_company_cursor = 0
+
+
+def _extract_last_action(value):
+    if isinstance(value, dict):
+        for key in ("timestamp", "time", "last_action"):
+            if value.get(key) is not None:
+                try:
+                    return int(value[key])
+                except Exception:
+                    pass
+    try:
+        return int(value) if value is not None else None
+    except Exception:
+        return None
+
+
+def _player_from_search_row(row):
+    if not isinstance(row, dict):
+        return None
+    root = row.get("user") if isinstance(row.get("user"), dict) else row
+    try:
+        pid = int(root.get("id") or row.get("id"))
+    except Exception:
+        return None
+    la = _extract_last_action(root.get("last_action") or row.get("last_action"))
+    return {
+        "player_id": pid,
+        "name": root.get("name") or row.get("name") or f"Player {pid}",
+        "level": root.get("level") or row.get("level"),
+        "last_action": la,
+    }
+
+
+async def _own_bs_total_v5(client):
+    now=time.time()
+    if _own_bs_cache["total"] and now-_own_bs_cache["at"]<300:
+        return int(_own_bs_cache["total"])
+    data=await app_module._torn_get(client,"/user/battlestats",error_text="battle stats")
+    root=data.get("battlestats") if isinstance(data,dict) and isinstance(data.get("battlestats"),dict) else data
+    total=0
+    for k in ("strength","defense","speed","dexterity"):
+        raw=root.get(k) if isinstance(root,dict) else 0
+        if isinstance(raw,dict):
+            raw=raw.get("value") or raw.get("amount") or 0
+        try: total+=max(0,int(float(raw or 0)))
+        except Exception: pass
+    if total>0:_own_bs_cache.update({"at":now,"total":total})
+    return total
+
+
+async def _ff_map_v5(client, ids):
+    key,_=mug_scout._ffscouter_key()
+    if not key:return {}
+    out={}
+    unique=list(dict.fromkeys(int(x) for x in ids if int(x)>0))
+    for start in range(0,len(unique),50):
+        batch=unique[start:start+50]
+        try:
+            r=await client.get(f"{mug_scout.FFSCOUTER_BASE}/get-stats",params={"key":key,"targets":",".join(map(str,batch))},timeout=12.0)
+            data=r.json()
+            if isinstance(data,list):
+                for row in data:
+                    if not isinstance(row,dict):continue
+                    try: out[int(row.get("player_id"))]=row
+                    except Exception: pass
+        except Exception:
+            pass
+    return out
+
+
+async def _billionaire_medal_id(client):
+    now=time.time()
+    if _medal_cache["billionaire_id"] and now-_medal_cache["at"]<86400:
+        return int(_medal_cache["billionaire_id"])
+    data=await app_module._torn_get(client,"/torn/medals",error_text="medal catalog")
+    rows=data.get("medals") if isinstance(data,dict) else None
+    found=None
+    if isinstance(rows,list):
+        for row in rows:
+            if str(row.get("name") or "").strip().lower()=="billionaire":
+                try: found=int(row.get("id"))
+                except Exception: pass
+                break
+    elif isinstance(rows,dict):
+        for key,row in rows.items():
+            if isinstance(row,dict) and str(row.get("name") or "").strip().lower()=="billionaire":
+                try: found=int(row.get("id") or key)
+                except Exception: pass
+                break
+    if found:_medal_cache.update({"at":now,"billionaire_id":found})
+    return found
+
+
+async def _has_medal(client, player_id, medal_id):
+    try:
+        data=await app_module._torn_get(client,f"/user/{int(player_id)}/medals",error_text="player medals")
+    except Exception:
+        return False
+    rows=data.get("medals") if isinstance(data,dict) else None
+    ids=set()
+    if isinstance(rows,list):
+        for row in rows:
+            if isinstance(row,dict):
+                try: ids.add(int(row.get("id")))
+                except Exception: pass
+            else:
+                try: ids.add(int(row))
+                except Exception: pass
+    elif isinstance(rows,dict):
+        for key,row in rows.items():
+            try: ids.add(int(row.get("id") if isinstance(row,dict) else key))
+            except Exception: pass
+    return int(medal_id) in ids
+
+
+async def _inactive_search_candidates(client, min_days, max_days, max_pages=8):
+    now=int(time.time()); out=[]; seen=set()
+    # lastActionMonthAgo gives us a useful broad pool; exact 15-30d is enforced locally.
+    for page in range(max_pages):
+        try:
+            data=await app_module._torn_get(client,"/user/search",{"filters":"lastActionMonthAgo","offset":page*25},error_text="user search")
+        except Exception:
+            break
+        rows=data.get("search") if isinstance(data,dict) else None
+        if not isinstance(rows,list) or not rows:break
+        for row in rows:
+            p=_player_from_search_row(row)
+            if not p or p["player_id"] in seen or p["last_action"] is None:continue
+            age=(now-int(p["last_action"]))/86400.0
+            if min_days<=age<=max_days:
+                p["inactive_days"]=round(age,1);out.append(p);seen.add(p["player_id"])
+        meta=data.get("_metadata") if isinstance(data,dict) else {}
+        links=meta.get("links") if isinstance(meta,dict) else {}
+        if not isinstance(links,dict) or not links.get("next"):break
+    return out
+
+
+async def _oil_type_id(client):
+    now=time.time()
+    if _oil_type_cache["id"] and now-_oil_type_cache["at"]<86400:
+        return int(_oil_type_cache["id"])
+    data=await app_module._torn_get(client,"/torn/companies",error_text="company types")
+    rows=data.get("companies") if isinstance(data,dict) else None
+    found=None
+    iterable=rows.values() if isinstance(rows,dict) else (rows or [])
+    for row in iterable:
+        if not isinstance(row,dict):continue
+        if "oil rig" in str(row.get("name") or row.get("type") or "").lower():
+            try: found=int(row.get("id") or row.get("type_id"))
+            except Exception: pass
+            if found:break
+    if found:_oil_type_cache.update({"at":now,"id":found})
+    return found
+
+
+def _employee_rows(data):
+    rows=data.get("employees") if isinstance(data,dict) else None
+    if isinstance(rows,dict):
+        tmp=[]
+        for key,row in rows.items():
+            if isinstance(row,dict):
+                x=dict(row);x.setdefault("id",key);tmp.append(x)
+        rows=tmp
+    return [x for x in (rows or []) if isinstance(x,dict)]
+
+
+def _employee_player(row):
+    root=row.get("user") if isinstance(row.get("user"),dict) else row
+    try: pid=int(root.get("id") or row.get("id"))
+    except Exception:return None
+    la=_extract_last_action(root.get("last_action") or row.get("last_action"))
+    return {"player_id":pid,"name":root.get("name") or row.get("name") or f"Player {pid}","level":root.get("level") or row.get("level"),"last_action":la}
+
+
+async def _oil_candidates(client, min_days, max_days, companies_per_scan=8):
+    global _oil_company_cursor
+    type_id=await _oil_type_id(client)
+    if not type_id:return [],0,0
+    data=await app_module._torn_get(client,f"/company/{type_id}/companies",{"limit":100,"offset":0},error_text="oil rig companies")
+    rows=data.get("companies") if isinstance(data,dict) else None
+    if isinstance(rows,dict): rows=list(rows.values())
+    companies=[x for x in (rows or []) if isinstance(x,dict)]
+    companies.sort(key=lambda x:(int(x.get("rating") or x.get("stars") or 0),int(x.get("id") or 0)),reverse=True)
+    if not companies:return [],0,0
+    start=_oil_company_cursor%len(companies)
+    selected=[companies[(start+i)%len(companies)] for i in range(min(companies_per_scan,len(companies)))]
+    _oil_company_cursor=(start+len(selected))%len(companies)
+    now=int(time.time());out=[]
+    sem=asyncio.Semaphore(4)
+    async def one(co):
+        try:
+            cid=int(co.get("id"))
+            d=await app_module._torn_get(client,f"/company/{cid}/employees",error_text="oil rig employees")
+        except Exception:return
+        for erow in _employee_rows(d):
+            p=_employee_player(erow)
+            if not p or p["last_action"] is None:continue
+            age=(now-int(p["last_action"]))/86400.0
+            if min_days<=age<=max_days:
+                p.update({"inactive_days":round(age,2),"company_id":cid,"company_name":co.get("name") or f"Oil Rig {cid}","company_rating":co.get("rating") or co.get("stars")})
+                out.append(p)
+    await asyncio.gather(*(one(co) for co in selected))
+    return out,len(companies),len(selected)
+
+
+def _build_v5_row(p, ff, own_bs, source, billionaire=False):
+    est=ff.get("bs_estimate") if isinstance(ff,dict) else None
+    try: est=float(est) if est is not None else None
+    except Exception: est=None
+    ratio=(est/own_bs) if est is not None and own_bs else None
+    # Wealth/activity opportunity score; FF is intentionally not a factor.
+    score=0
+    reasons=[]
+    days=float(p.get("inactive_days") or 0)
+    if source=="oil":
+        if 1<=days<=3:score+=45;reasons.append("Oil Rig 1-3d inactive")
+        if p.get("company_rating"):
+            try: score+=min(15,float(p["company_rating"])*1.5)
+            except Exception: pass
+    else:
+        if 15<=days<=30:score+=40;reasons.append("15-30d inactive")
+        if billionaire:score+=40;reasons.append("Billionaire medal")
+    if ratio is not None:
+        if ratio<=0.5:score+=15;reasons.append("well below your BS")
+        elif ratio<=0.8:score+=10;reasons.append("below your BS")
+        elif ratio<=1.0:score+=5;reasons.append("within your BS")
+    score=min(100,round(score,1))
+    return {
+        **p,
+        "source_mode":source,
+        "billionaire_medal":bool(billionaire),
+        "bs_estimate":int(est) if est is not None else None,
+        "bs_estimate_human":ff.get("bs_estimate_human") if isinstance(ff,dict) else None,
+        "bs_ratio_pct":round(ratio*100,1) if ratio is not None else None,
+        "fair_fight":ff.get("fair_fight") if isinstance(ff,dict) else None,
+        "ff_source":ff.get("source") if isinstance(ff,dict) else None,
+        "scores":{"mug":score},
+        "signals":reasons,
+        "profile_url":mug_scout._profile_url(p["player_id"]),
+        "attack_url":mug_scout._attack_url(p["player_id"]),
+    }
+
+
+@app.get("/api/mug-scout/search-v5")
+async def mug_scout_search_v5(
+    mode: str = Query("billionaire"),
+    limit: int = Query(25, ge=1, le=50),
+    mininactive_days: float = Query(15, ge=0, le=3650),
+    maxinactive_days: float = Query(30, ge=0, le=3650),
+):
+    if mininactive_days>maxinactive_days:
+        raise HTTPException(400,"Minimum inactive days cannot exceed maximum inactive days")
+    if mode not in {"billionaire","oil"}:
+        raise HTTPException(400,"Mode must be billionaire or oil")
+    if not app_module._api_key:
+        raise HTTPException(401,"Load your Torn API key first")
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        own_bs=await _own_bs_total_v5(client)
+        if not own_bs:
+            raise HTTPException(502,"Could not determine your battle stats")
+
+        if mode=="oil":
+            candidates,total_companies,companies_scanned=await _oil_candidates(client,mininactive_days,maxinactive_days)
+            medal_id=None
+        else:
+            candidates=await _inactive_search_candidates(client,mininactive_days,maxinactive_days)
+            total_companies=companies_scanned=0
+            medal_id=await _billionaire_medal_id(client)
+
+        ffmap=await _ff_map_v5(client,[x["player_id"] for x in candidates])
+
+        # Safety gate: known FFScouter estimate must be <= your total BS.
+        safe=[]
+        for p in candidates:
+            ff=ffmap.get(int(p["player_id"])) or {}
+            est=ff.get("bs_estimate")
+            try: est=float(est) if est is not None else None
+            except Exception: est=None
+            if est is None or est>own_bs:
+                continue
+            safe.append((p,ff))
+
+        rows=[]
+        if mode=="billionaire":
+            if medal_id:
+                sem=asyncio.Semaphore(5)
+                async def check(pair):
+                    p,ff=pair
+                    async with sem:
+                        ok=await _has_medal(client,p["player_id"],medal_id)
+                    if ok: rows.append(_build_v5_row(p,ff,own_bs,"billionaire",True))
+                await asyncio.gather(*(check(pair) for pair in safe[:40]))
+        else:
+            rows=[_build_v5_row(p,ff,own_bs,"oil",False) for p,ff in safe]
+
+    rows.sort(key=lambda x:(float((x.get("scores") or {}).get("mug") or 0),-float(x.get("inactive_days") or 0)),reverse=True)
+    rows=rows[:int(limit)]
+    history=mug_history_map([x["player_id"] for x in rows])
+    for item in rows:
+        h=history.get(int(item["player_id"]),{})
+        item["mug_history"]={"mug_count":h.get("mug_count",0),"total_mugged":h.get("total_mugged",0),"last_mug_ts":h.get("last_mug_ts"),"best_mug":h.get("best_mug",0)}
+
+    return {
+        "ok":True,
+        "version":MUG_SCOUT_V5_VERSION,
+        "mode":mode,
+        "own_total_battlestats":own_bs,
+        "source_candidates":len(candidates),
+        "safe_candidates":len(safe),
+        "items":rows,
+        "oil_companies_total":total_companies,
+        "oil_companies_scanned":companies_scanned,
+        "notes":[
+            "FF/fair-fight is not part of Mug Score; FFScouter is used only to reject targets estimated above your total battle stats.",
+            "Billionaire mode requires Torn's Billionaire medal and the requested inactivity window.",
+            "Oil Rig mode rotates through public Oil Rig companies and looks for employees in the requested inactivity window.",
         ],
     }
