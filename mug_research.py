@@ -586,20 +586,43 @@ async def mug_scout_search_v5(
         raise HTTPException(401,"Load your Torn API key first")
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        own_bs=await _own_bs_total_v5(client)
+        try:
+            own_bs=await _own_bs_total_v5(client)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(502, f"Mug Scout stage 'own battle stats' failed: {type(exc).__name__}: {exc}") from exc
         if not own_bs:
             raise HTTPException(502,"Could not determine your battle stats")
 
         if mode=="oil":
-            candidates,total_companies,companies_scanned=await _oil_candidates(client,mininactive_days,maxinactive_days)
+            try:
+                candidates,total_companies,companies_scanned=await _oil_candidates(client,mininactive_days,maxinactive_days)
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(502, f"Mug Scout stage 'Oil Rig discovery' failed: {type(exc).__name__}: {exc}") from exc
             inactive_diag={"source_filter":"oil-company-employees","raw_seen":None}
             medal_id=None
         else:
-            candidates,inactive_diag=await _inactive_search_candidates(client,mininactive_days,maxinactive_days)
+            try:
+                candidates,inactive_diag=await _inactive_search_candidates(client,mininactive_days,maxinactive_days)
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(502, f"Mug Scout stage 'inactive user search' failed: {type(exc).__name__}: {exc}") from exc
             total_companies=companies_scanned=0
-            medal_id=await _billionaire_medal_id(client)
+            try:
+                medal_id=await _billionaire_medal_id(client)
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(502, f"Mug Scout stage 'Billionaire medal catalog' failed: {type(exc).__name__}: {exc}") from exc
 
-        ffmap=await _ff_map_v5(client,[x["player_id"] for x in candidates])
+        try:
+            ffmap=await _ff_map_v5(client,[x["player_id"] for x in candidates])
+        except Exception as exc:
+            raise HTTPException(502, f"Mug Scout stage 'FFScouter enrichment' failed: {type(exc).__name__}: {exc}") from exc
 
         # Safety gate: known FFScouter estimate must be <= your total BS.
         safe=[]
@@ -624,7 +647,10 @@ async def mug_scout_search_v5(
                         ok=await _has_medal(client,p["player_id"],medal_id)
                     medal_checked += 1
                     if ok: rows.append(_build_v5_row(p,ff,own_bs,"billionaire",True))
-                await asyncio.gather(*(check(pair) for pair in safe[:40]))
+                try:
+                    await asyncio.gather(*(check(pair) for pair in safe[:40]))
+                except Exception as exc:
+                    raise HTTPException(502, f"Mug Scout stage 'Billionaire medal verification' failed: {type(exc).__name__}: {exc}") from exc
         else:
             rows=[_build_v5_row(p,ff,own_bs,"oil",False) for p,ff in safe]
 
