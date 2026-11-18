@@ -385,7 +385,7 @@ async def _ff_map_v5(client, ids):
                     except Exception: pass
         except Exception:
             pass
-    return out, {"source_filter":source_filter,"raw_seen":raw_seen}
+    return out
 
 
 async def _billionaire_medal_id(client):
