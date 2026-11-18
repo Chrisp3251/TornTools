@@ -14,6 +14,7 @@ import app as core
 import bounty_status_runtime as runtime
 import travel_intelligence as ti
 import mug_scout
+import mug_research  # register Mug Scout / Mug Research routes on the shared app
 
 app = runtime.app
 
