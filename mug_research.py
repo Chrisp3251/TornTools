@@ -513,6 +513,25 @@ async def _inactive_search_candidates(client, min_days, max_days, max_pages=2):
     }
 
 
+async def _public_networth(client, player_id):
+    try:
+        data=await app_module._torn_get(
+            client,
+            f"/user/{int(player_id)}/personalstats",
+            {"cat":"networth"},
+            error_text="player net worth",
+        )
+    except Exception:
+        return None
+    root=data.get("personalstats") if isinstance(data,dict) else None
+    nw=root.get("networth") if isinstance(root,dict) else None
+    total=nw.get("total") if isinstance(nw,dict) else None
+    try:
+        return int(total) if total is not None else None
+    except Exception:
+        return None
+
+
 async def _oil_type_id(client):
     now=time.time()
     if _oil_type_cache["id"] and now-_oil_type_cache["at"]<86400:
@@ -685,20 +704,25 @@ async def mug_scout_search_v5(
 
         rows=[]
         medal_checked=0
+        networth_checked=0
+        networth_over_1b=0
         if mode=="billionaire":
-            if medal_id:
-                sem=asyncio.Semaphore(5)
-                async def check(pair):
-                    nonlocal medal_checked
-                    p,ff=pair
-                    async with sem:
-                        ok=await _has_medal(client,p["player_id"],medal_id)
-                    medal_checked += 1
-                    if ok: rows.append(_build_v5_row(p,ff,own_bs,"billionaire",True))
-                try:
-                    await asyncio.gather(*(check(pair) for pair in safe[:40]))
-                except Exception as exc:
-                    raise HTTPException(502, f"Mug Scout stage 'Billionaire medal verification' failed: {type(exc).__name__}: {exc}") from exc
+            sem=asyncio.Semaphore(5)
+            async def check(pair):
+                nonlocal networth_checked, networth_over_1b
+                p,ff=pair
+                async with sem:
+                    nw=await _public_networth(client,p["player_id"])
+                networth_checked += 1
+                if nw is not None and nw >= 1_000_000_000:
+                    networth_over_1b += 1
+                    row=_build_v5_row(p,ff,own_bs,"billionaire",True)
+                    row["networth"]=nw
+                    rows.append(row)
+            try:
+                await asyncio.gather(*(check(pair) for pair in safe[:40]))
+            except Exception as exc:
+                raise HTTPException(502, f"Mug Scout stage 'public net worth verification' failed: {type(exc).__name__}: {exc}") from exc
         else:
             rows=[_build_v5_row(p,ff,own_bs,"oil",False) for p,ff in safe]
 
@@ -727,6 +751,8 @@ async def mug_scout_search_v5(
             "bs_safe":len(safe),
             "billionaire_medal_id":medal_id,
             "medals_checked":medal_checked,
+            "networth_checked":networth_checked,
+            "networth_over_1b":networth_over_1b,
             "verified_billionaires":len(rows) if mode=="billionaire" else None,
         },
         "items":rows,
@@ -734,7 +760,7 @@ async def mug_scout_search_v5(
         "oil_companies_scanned":companies_scanned,
         "notes":[
             "FF/fair-fight is not part of Mug Score; FFScouter is used only to reject targets estimated above your total battle stats.",
-            "Billionaire mode requires Torn's Billionaire medal and the requested inactivity window.",
+            "Billionaire mode requires public net worth of at least $1B and the requested inactivity window.",
             "Diagnostics report each filtering stage so an empty result can be traced instead of silently returning nothing.",
             "Oil Rig mode rotates through public Oil Rig companies and looks for employees in the requested inactivity window.",
         ],
