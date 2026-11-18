@@ -318,6 +318,7 @@ _oil_type_cache = {"at": 0.0, "id": None}
 _medal_cache = {"at": 0.0, "billionaire_id": None}
 _own_bs_cache = {"at": 0.0, "total": None}
 _oil_company_cursor = 0
+_inactive_search_cursor = 0
 
 
 def _extract_last_action(value):
@@ -433,10 +434,12 @@ async def _has_medal(client, player_id, medal_id):
     return int(medal_id) in ids
 
 
-async def _inactive_search_candidates(client, min_days, max_days, max_pages=8):
-    now=int(time.time()); out=[]; seen=set(); raw_seen=0
-    # Torn's last-action filters are buckets. For a 15-30 day target window,
-    # lastActionWeekAgo is the correct broad source bucket; MonthAgo starts too late.
+async def _inactive_search_candidates(client, min_days, max_days, max_pages=2):
+    global _inactive_search_cursor
+    now=int(time.time()); out=[]; seen=set(); raw_seen=0; profiles_checked=0
+    # /user/search only returns id/name/level/online/faction/icons; it does NOT
+    # include last_action.timestamp. Use it only as a discovery pool, then verify
+    # exact inactivity with /user/{id}/profile.
     if max_days <= 7:
         source_filter="lastActionDayAgo"
     elif max_days <= 30:
@@ -445,24 +448,69 @@ async def _inactive_search_candidates(client, min_days, max_days, max_pages=8):
         source_filter="lastActionMonthAgo"
     else:
         source_filter="lastActionYearAgo"
+
+    base_offset=_inactive_search_cursor
+    search_rows=[]
     for page in range(max_pages):
+        offset=base_offset + page*25
         try:
-            data=await app_module._torn_get(client,"/user/search",{"filters":source_filter,"offset":page*25},error_text="user search")
+            data=await app_module._torn_get(
+                client,"/user/search",
+                {"filters":source_filter,"offset":offset},
+                error_text="user search",
+            )
         except Exception:
             break
         rows=data.get("search") if isinstance(data,dict) else None
-        if not isinstance(rows,list) or not rows:break
+        if not isinstance(rows,list) or not rows:
+            if page==0 and base_offset:
+                _inactive_search_cursor=0
+            break
         raw_seen += len(rows)
         for row in rows:
             p=_player_from_search_row(row)
-            if not p or p["player_id"] in seen or p["last_action"] is None:continue
-            age=(now-int(p["last_action"]))/86400.0
-            if min_days<=age<=max_days:
-                p["inactive_days"]=round(age,1);out.append(p);seen.add(p["player_id"])
-        meta=data.get("_metadata") if isinstance(data,dict) else {}
-        links=meta.get("links") if isinstance(meta,dict) else {}
-        if not isinstance(links,dict) or not links.get("next"):break
-    return out, {"source_filter":source_filter,"raw_seen":raw_seen}
+            if p and p["player_id"] not in seen:
+                search_rows.append(p); seen.add(p["player_id"])
+
+    _inactive_search_cursor = base_offset + max_pages*25
+    if len(search_rows) < 25:
+        _inactive_search_cursor = 0
+
+    sem=asyncio.Semaphore(5)
+    async def verify(p):
+        nonlocal profiles_checked
+        async with sem:
+            try:
+                data=await app_module._torn_get(
+                    client,f"/user/{int(p['player_id'])}/profile",
+                    error_text="player profile",
+                )
+            except Exception:
+                return
+        profiles_checked += 1
+        root=data.get("profile") if isinstance(data,dict) and isinstance(data.get("profile"),dict) else data
+        if not isinstance(root,dict):
+            return
+        last_action=root.get("last_action")
+        ts=_extract_last_action(last_action)
+        if ts is None:
+            return
+        age=(now-int(ts))/86400.0
+        if min_days <= age <= max_days:
+            p["last_action"]=int(ts)
+            p["inactive_days"]=round(age,1)
+            if root.get("name"): p["name"]=root.get("name")
+            if root.get("level") is not None: p["level"]=root.get("level")
+            out.append(p)
+
+    await asyncio.gather(*(verify(p) for p in search_rows[:50]))
+    return out, {
+        "source_filter":source_filter,
+        "raw_seen":raw_seen,
+        "profiles_checked":profiles_checked,
+        "start_offset":base_offset,
+        "next_offset":_inactive_search_cursor,
+    }
 
 
 async def _oil_type_id(client):
@@ -671,6 +719,9 @@ async def mug_scout_search_v5(
         "diagnostics":{
             "source_filter":inactive_diag.get("source_filter"),
             "raw_source_rows":inactive_diag.get("raw_seen"),
+            "profiles_checked":inactive_diag.get("profiles_checked"),
+            "source_start_offset":inactive_diag.get("start_offset"),
+            "source_next_offset":inactive_diag.get("next_offset"),
             "inactive_window_matches":len(candidates),
             "ffscouter_known":sum(1 for p in candidates if int(p["player_id"]) in ffmap),
             "bs_safe":len(safe),
